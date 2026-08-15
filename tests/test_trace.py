@@ -157,12 +157,21 @@ class TraceTestCase(unittest.TestCase):
         self.assertEqual(card["boundaries"], "2")
 
     def test_totals_accumulate_across_boundaries(self):
+        """Accounting semantics, taken from the provider's own vocabulary.
+
+        The provider reports three different quantities and an earlier version of
+        this plugin mapped two of them onto one counter: summing `prompt_tokens`
+        adds the whole context once per call, so a stable window reported as
+        millions of tokens and manufactured a context explosion that never
+        happened. `input` is NEW tokens only; the whole prompt is a high-water
+        mark, which is the question worth asking of a context window.
+        """
         self.start()
         for _ in range(2):
             self.fire("post_api_request", session_id="s1", model="m1",
-                      duration=1.5,
-                      usage={"prompt_tokens": 100, "completion_tokens": 10,
-                             "cached_tokens": 900})
+                      api_duration=1.5,
+                      usage={"prompt_tokens": 1000, "input_tokens": 100,
+                             "completion_tokens": 10, "cache_read_tokens": 900})
             self.fire("on_session_end", session_id="s1", completed=True)
 
         card = self.card()
@@ -170,9 +179,89 @@ class TraceTestCase(unittest.TestCase):
         self.assertEqual(card["api_seconds"], "3.0")
         self.assertEqual(json.loads(card["tokens"]),
                          {"input": 200, "output": 20, "cached": 1800})
-        # Peak is one prompt's real size, not the running sum.
+        # The reported whole prompt, not the sum and not a reconstruction.
         self.assertEqual(card["context_peak"], "1000")
         self.assertEqual(json.loads(card["models"]), {"m1": 2})
+
+    def test_api_seconds_reads_the_framework_field(self):
+        """The hook passes `api_duration`. Guessing another name silently reports zero."""
+        self.start()
+        self.fire("post_api_request", session_id="s1", model="m1", api_duration=2.5,
+                  usage={"prompt_tokens": 10, "input_tokens": 10})
+        self.fire("on_session_end", session_id="s1", completed=True)
+        self.assertEqual(self.card()["api_seconds"], "2.5")
+
+    def test_input_falls_back_to_whole_prompt_without_a_split(self):
+        """A provider reporting no `input_tokens` still has its cost counted."""
+        self.start()
+        self.fire("post_api_request", session_id="s1", model="m1", api_duration=1.0,
+                  usage={"prompt_tokens": 700, "completion_tokens": 3})
+        self.fire("on_session_end", session_id="s1", completed=True)
+        card = self.card()
+        self.assertEqual(json.loads(card["tokens"])["input"], 700)
+        self.assertEqual(card["context_peak"], "700")
+
+    def test_a_cached_session_does_not_inflate_input(self):
+        """The regression this accounting exists to prevent, stated as a number.
+
+        Ten calls over a stable 20k window with 19k cached cost 10k new tokens,
+        not 200k. Summing the whole prompt is what produced the false explosion.
+        """
+        self.start()
+        for _ in range(10):
+            self.fire("post_api_request", session_id="s1", model="m1", api_duration=0.1,
+                      usage={"prompt_tokens": 20_000, "input_tokens": 1_000,
+                             "completion_tokens": 0, "cache_read_tokens": 19_000})
+        self.fire("on_session_end", session_id="s1", completed=True)
+        card = self.card()
+        self.assertEqual(json.loads(card["tokens"])["input"], 10_000)
+        self.assertEqual(card["context_peak"], "20000")
+
+    def test_emitted_events_agree_with_the_published_schema(self):
+        """A schema nothing validates against is documentation, not a contract.
+
+        Stdlib only: `required` keys must be present and no key may fall outside
+        `properties`, checked against events the plugin actually wrote. This is the
+        check that catches a field added to the emitter and not to the schema.
+        """
+        schema = json.loads(
+            (PLUGIN_PATH.parent.parent / "schemas" / "trace-event.schema.json")
+            .read_text(encoding="utf-8"))
+        defs = schema.get("$defs") or {}
+
+        self.plugin._exposed_skills = lambda: ["alpha"]
+        self.start()
+        self.fire("pre_tool_call", session_id="s1", tool_name="read_file", args={"p": 1})
+        self.fire("post_tool_call", session_id="s1", tool_name="read_file", result="ok")
+        self.fire("post_api_request", session_id="s1", model="m1", api_duration=1.0,
+                  usage={"prompt_tokens": 10, "input_tokens": 4, "completion_tokens": 1,
+                         "cache_read_tokens": 6})
+        self.fire("api_request_error", session_id="s1", error="boom", model="m1")
+        self.fire("on_skill_lifecycle", session_id="s1", skill_name="alpha")
+        self.fire("subagent_start", session_id="s1", agent_name="worker")
+        self.fire("on_session_end", session_id="s1", completed=True)
+        self.fire("on_session_reset", session_id="s1")
+        self.fire("on_session_finalize", session_id="s1")
+
+        recorded = self.events()
+        self.assertTrue(recorded)
+        seen = set()
+        for event in recorded:
+            kind = event["kind"]
+            definition = defs.get(kind)
+            self.assertIsNotNone(definition, f"schema has no definition for kind {kind!r}")
+            allowed = set(definition.get("properties") or {})
+            required = set(definition.get("required") or {})
+            extra = set(event) - allowed
+            self.assertFalse(
+                extra, f"{kind} emits {sorted(extra)}, absent from the schema")
+            missing = required - set(event)
+            self.assertFalse(
+                missing, f"{kind} schema requires {sorted(missing)}, never emitted")
+            seen.add(kind)
+
+        # Every kind the schema defines must be reachable through the hook surface.
+        self.assertEqual(seen, set(defs) - {"base"})
 
     def test_exposed_skills_survive_a_boundary(self):
         """The headline field must not be emptied by a turn boundary."""

@@ -82,10 +82,13 @@ Fired by `post_api_request`.
 | Field | Type | Meaning |
 |---|---|---|
 | `model` | string | Model identifier. |
-| `seconds` | number | Request duration. |
-| `input` | integer | New prompt tokens. |
-| `output` | integer | Completion tokens. |
-| `cached` | integer | Reused prompt tokens. |
+| `provider` | string or `null` | Provider identifier, if supplied. |
+| `seconds` | number | Request duration, from the hook's `api_duration`. |
+| `input` | integer or `null` | New (uncached) prompt tokens. Falls back to the whole prompt when the provider reports no split. |
+| `output` | integer or `null` | Completion tokens. |
+| `cached` | integer or `null` | Reused prompt tokens. |
+| `prompt` | integer or `null` | The whole prompt as reported, cached portion included. Never summed across calls. |
+| `finish_reason` | string or `null` | Completion reason, if supplied. |
 | `tool_calls` | integer or `null` | Number of tool calls in the assistant turn, if supplied. |
 
 ### `api_error`
@@ -131,7 +134,7 @@ are used in [`schemas/trace-card.schema.json`](../schemas/trace-card.schema.json
 | `api_calls` | integer | Total API requests observed. |
 | `api_seconds` | number | Sum of observed API request durations. |
 | `tokens` | object | `{input, output, cached}` token sums. `input` counts new tokens only; `cached` counts reused prompt tokens. |
-| `context_peak` | integer | Largest single prompt size (`input + cached`) observed. |
+| `context_peak` | integer | High-water mark of the whole prompt: the largest `prompt_tokens` any single request reported, cached portion included. It is the reported value, never a sum and never reconstructed from `input + cached`. |
 | `models` | object | Map of model identifier to call count. |
 | `subagents` | integer | Number of subagent starts observed. |
 | `skills_activated` | object | Map of skill name to activation count. |

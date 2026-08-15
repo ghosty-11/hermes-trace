@@ -466,40 +466,71 @@ def _on_post_tool_call(**kw: Any) -> None:
         pass
 
 
-def _usage_int(usage: Any, *names: str) -> int:
+def _usage_int(usage: Any, *names: str) -> int | None:
+    """First integer among `names`, or None when the provider reports none."""
     for name in names:
         try:
             value = usage.get(name) if isinstance(usage, dict) else getattr(usage, name, None)
-            if value is None:
+            if isinstance(value, bool) or value is None:
                 continue
             return int(value)
-        except Exception:
+        except (TypeError, ValueError):
             continue
-    return 0
+    return None
 
 
 def _on_post_api_request(**kw: Any) -> None:
+    """Account for one API call.
+
+    THE ACCOUNTING IS THE POINT, and the three quantities are not interchangeable:
+
+      input_tokens       NEW (uncached) tokens for this call
+      prompt_tokens      the WHOLE prompt, cached part included
+      cache_read_tokens  the cached part
+
+    Summing `prompt_tokens` across a session adds the entire context once per
+    call, so a stable 20k window reads as hundreds of thousands of tokens. That
+    is not a rounding error: it manufactures a context explosion that never
+    happened and sends an investigation the wrong way.
+
+    So `input` counts new tokens only — what the session actually cost — and the
+    whole prompt is kept as a HIGH-WATER MARK, which is the question worth asking
+    of a context window: not how many times we re-sent it, but how full it ever got.
+    """
     try:
         sid = _sid(kw)
         usage = kw.get("usage") or {}
         model = str(kw.get("model") or "")
-        seconds = float(kw.get("duration") or kw.get("elapsed") or 0.0)
-        new_input = _usage_int(usage, "prompt_tokens", "input_tokens")
-        output = _usage_int(usage, "completion_tokens", "output_tokens")
-        cached = _usage_int(usage, "cached_tokens", "cache_read_input_tokens")
+        seconds = float(kw.get("api_duration") or 0.0)
+
+        whole_prompt = _usage_int(usage, "prompt_tokens")
+        # A provider without the cached/new split reports only the whole prompt.
+        new_input = _usage_int(usage, "input_tokens")
+        if new_input is None:
+            new_input = whole_prompt
+        output = _usage_int(usage, "output_tokens", "completion_tokens")
+        cached = _usage_int(usage, "cache_read_tokens", "cached_tokens",
+                            "cache_read_input_tokens")
+
         with _T._lock:
             session = _T._session(sid)
             session["api_calls"] += 1
             session["api_seconds"] += max(0.0, seconds)
-            session["tokens"]["input"] += new_input
-            session["tokens"]["output"] += output
-            session["tokens"]["cached"] += cached
-            session["context_peak"] = max(
-                int(session["context_peak"]), new_input + cached)
+            if new_input is not None:
+                session["tokens"]["input"] += new_input
+            if output is not None:
+                session["tokens"]["output"] += output
+            if cached is not None:
+                session["tokens"]["cached"] += cached
+            if whole_prompt is not None:
+                session["context_peak"] = max(
+                    int(session["context_peak"]), whole_prompt)
             if model:
                 session["models"][model] = session["models"].get(model, 0) + 1
-        _T.event("api_after", sid, model=model, seconds=round(seconds, 3),
-                 input=new_input, output=output, cached=cached,
+        _T.event("api_after", sid, model=model, provider=kw.get("provider"),
+                 seconds=round(seconds, 3), input=new_input, output=output,
+                 cached=cached, prompt=whole_prompt,
+                 finish_reason=kw.get("finish_reason"),
                  tool_calls=kw.get("assistant_tool_call_count"))
     except Exception:
         pass

@@ -164,10 +164,13 @@
         "session_id": { "type": "string" },
         "profile": { "type": "string" },
         "model": { "type": "string" },
+        "provider": { "anyOf": [{ "type": "string" }, { "type": "null" }] },
         "seconds": { "type": "number" },
-        "input": { "type": "integer", "minimum": 0 },
-        "output": { "type": "integer", "minimum": 0 },
-        "cached": { "type": "integer", "minimum": 0 },
+        "input": { "anyOf": [{ "type": "integer", "minimum": 0 }, { "type": "null" }] },
+        "output": { "anyOf": [{ "type": "integer", "minimum": 0 }, { "type": "null" }] },
+        "cached": { "anyOf": [{ "type": "integer", "minimum": 0 }, { "type": "null" }] },
+        "prompt": { "anyOf": [{ "type": "integer", "minimum": 0 }, { "type": "null" }] },
+        "finish_reason": { "anyOf": [{ "type": "string" }, { "type": "null" }] },
         "tool_calls": {
           "anyOf": [{ "type": "integer" }, { "type": "null" }]
         }
@@ -178,10 +181,13 @@
         "session_id",
         "profile",
         "model",
+        "provider",
         "seconds",
         "input",
         "output",
         "cached",
+        "prompt",
+        "finish_reason",
         "tool_calls"
       ],
       "additionalProperties": false

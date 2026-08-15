@@ -1,0 +1,8 @@
+name: hermes-trace
+label: Hermes Trace
+kind: standalone
+version: 1.0.0
+description: >
+  Records per-session evidence of agent activity: append-only events and compact
+  TraceCards under the configured trace directory.
+author: ghosty-11

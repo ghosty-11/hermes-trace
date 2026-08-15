@@ -1,0 +1,237 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/ghosty-11/hermes-trace/main/schemas/trace-event.schema.json",
+  "title": "Hermes trace event",
+  "description": "One JSON object emitted to events/YYYY-MM-DD.jsonl.",
+  "type": "object",
+  "oneOf": [
+    { "$ref": "#/$defs/session_start" },
+    { "$ref": "#/$defs/session_end" },
+    { "$ref": "#/$defs/session_finalize" },
+    { "$ref": "#/$defs/session_reset" },
+    { "$ref": "#/$defs/tool_before" },
+    { "$ref": "#/$defs/tool_after" },
+    { "$ref": "#/$defs/api_after" },
+    { "$ref": "#/$defs/api_error" },
+    { "$ref": "#/$defs/skill" },
+    { "$ref": "#/$defs/subagent_start" }
+  ],
+  "$defs": {
+    "base": {
+      "type": "object",
+      "properties": {
+        "ts": {
+          "type": "number",
+          "description": "Unix timestamp in seconds, rounded to milliseconds."
+        },
+        "kind": {
+          "type": "string"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "profile": {
+          "type": "string",
+          "description": "Hermes profile name derived from the home path."
+        }
+      },
+      "required": ["ts", "kind", "session_id", "profile"]
+    },
+    "session_start": {
+      "allOf": [{ "$ref": "#/$defs/base" }],
+      "properties": {
+        "ts": { "type": "number" },
+        "kind": { "const": "session_start" },
+        "session_id": { "type": "string" },
+        "profile": { "type": "string" },
+        "platform": {
+          "anyOf": [{ "type": "string" }, { "type": "null" }]
+        },
+        "boundary_reason": {
+          "anyOf": [{ "type": "string" }, { "type": "null" }]
+        },
+        "skills_exposed_count": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "ts",
+        "kind",
+        "session_id",
+        "profile",
+        "platform",
+        "boundary_reason",
+        "skills_exposed_count"
+      ],
+      "additionalProperties": false
+    },
+    "session_end": {
+      "allOf": [{ "$ref": "#/$defs/base" }],
+      "properties": {
+        "ts": { "type": "number" },
+        "kind": { "const": "session_end" },
+        "session_id": { "type": "string" },
+        "profile": { "type": "string" },
+        "completed": {
+          "anyOf": [{ "type": "boolean" }, { "type": "null" }]
+        }
+      },
+      "required": ["ts", "kind", "session_id", "profile", "completed"],
+      "additionalProperties": false
+    },
+    "session_finalize": {
+      "allOf": [{ "$ref": "#/$defs/base" }],
+      "properties": {
+        "ts": { "type": "number" },
+        "kind": { "const": "session_finalize" },
+        "session_id": { "type": "string" },
+        "profile": { "type": "string" }
+      },
+      "required": ["ts", "kind", "session_id", "profile"],
+      "additionalProperties": false
+    },
+    "session_reset": {
+      "allOf": [{ "$ref": "#/$defs/base" }],
+      "properties": {
+        "ts": { "type": "number" },
+        "kind": { "const": "session_reset" },
+        "session_id": { "type": "string" },
+        "profile": { "type": "string" }
+      },
+      "required": ["ts", "kind", "session_id", "profile"],
+      "additionalProperties": false
+    },
+    "tool_before": {
+      "allOf": [{ "$ref": "#/$defs/base" }],
+      "properties": {
+        "ts": { "type": "number" },
+        "kind": { "const": "tool_before" },
+        "session_id": { "type": "string" },
+        "profile": { "type": "string" },
+        "tool": { "type": "string" },
+        "args": {},
+        "tool_call_id": {
+          "anyOf": [{ "type": "string" }, { "type": "null" }]
+        },
+        "turn_id": {
+          "anyOf": [{ "type": "string" }, { "type": "null" }]
+        }
+      },
+      "required": [
+        "ts",
+        "kind",
+        "session_id",
+        "profile",
+        "tool",
+        "args",
+        "tool_call_id",
+        "turn_id"
+      ],
+      "additionalProperties": false
+    },
+    "tool_after": {
+      "allOf": [{ "$ref": "#/$defs/base" }],
+      "properties": {
+        "ts": { "type": "number" },
+        "kind": { "const": "tool_after" },
+        "session_id": { "type": "string" },
+        "profile": { "type": "string" },
+        "tool": { "type": "string" },
+        "looks_failed": { "type": "boolean" },
+        "result": {},
+        "tool_call_id": {
+          "anyOf": [{ "type": "string" }, { "type": "null" }]
+        }
+      },
+      "required": [
+        "ts",
+        "kind",
+        "session_id",
+        "profile",
+        "tool",
+        "looks_failed",
+        "result",
+        "tool_call_id"
+      ],
+      "additionalProperties": false
+    },
+    "api_after": {
+      "allOf": [{ "$ref": "#/$defs/base" }],
+      "properties": {
+        "ts": { "type": "number" },
+        "kind": { "const": "api_after" },
+        "session_id": { "type": "string" },
+        "profile": { "type": "string" },
+        "model": { "type": "string" },
+        "seconds": { "type": "number" },
+        "input": { "type": "integer", "minimum": 0 },
+        "output": { "type": "integer", "minimum": 0 },
+        "cached": { "type": "integer", "minimum": 0 },
+        "tool_calls": {
+          "anyOf": [{ "type": "integer" }, { "type": "null" }]
+        }
+      },
+      "required": [
+        "ts",
+        "kind",
+        "session_id",
+        "profile",
+        "model",
+        "seconds",
+        "input",
+        "output",
+        "cached",
+        "tool_calls"
+      ],
+      "additionalProperties": false
+    },
+    "api_error": {
+      "allOf": [{ "$ref": "#/$defs/base" }],
+      "properties": {
+        "ts": { "type": "number" },
+        "kind": { "const": "api_error" },
+        "session_id": { "type": "string" },
+        "profile": { "type": "string" },
+        "error": { "type": "string" },
+        "model": {
+          "anyOf": [{ "type": "string" }, { "type": "null" }]
+        }
+      },
+      "required": ["ts", "kind", "session_id", "profile", "error", "model"],
+      "additionalProperties": false
+    },
+    "skill": {
+      "allOf": [{ "$ref": "#/$defs/base" }],
+      "properties": {
+        "ts": { "type": "number" },
+        "kind": { "const": "skill" },
+        "session_id": { "type": "string" },
+        "profile": { "type": "string" },
+        "skill": { "type": "string" },
+        "phase": {
+          "anyOf": [{ "type": "string" }, { "type": "null" }]
+        },
+        "source": {
+          "anyOf": [{ "type": "string" }, { "type": "null" }]
+        }
+      },
+      "required": ["ts", "kind", "session_id", "profile", "skill", "phase", "source"],
+      "additionalProperties": false
+    },
+    "subagent_start": {
+      "allOf": [{ "$ref": "#/$defs/base" }],
+      "properties": {
+        "ts": { "type": "number" },
+        "kind": { "const": "subagent_start" },
+        "session_id": { "type": "string" },
+        "profile": { "type": "string" },
+        "agent": {
+          "anyOf": [{ "type": "string" }, { "type": "null" }]
+        }
+      },
+      "required": ["ts", "kind", "session_id", "profile", "agent"],
+      "additionalProperties": false
+    }
+  }
+}

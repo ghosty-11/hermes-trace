@@ -1,0 +1,134 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/ghosty-11/hermes-trace/main/schemas/trace-card.schema.json",
+  "title": "Hermes TraceCard",
+  "description": "YAML-on-disk scalar mapping produced for each session id.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "session_id",
+    "profile",
+    "platform",
+    "final",
+    "boundaries",
+    "session_seconds",
+    "api_calls",
+    "api_seconds",
+    "tokens",
+    "context_peak",
+    "models",
+    "subagents",
+    "skills_activated",
+    "skills_exposed_count",
+    "skills_exposed_unused",
+    "tool_calls",
+    "tool_errors",
+    "errors"
+  ],
+  "properties": {
+    "session_id": {
+      "type": "string"
+    },
+    "profile": {
+      "type": "string"
+    },
+    "platform": {
+      "type": "string"
+    },
+    "final": {
+      "type": "boolean"
+    },
+    "boundaries": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "session_seconds": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Seconds since the first event observed for this id; a floor, not the session's true age."
+    },
+    "api_calls": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "api_seconds": {
+      "type": "number",
+      "minimum": 0
+    },
+    "tokens": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["input", "output", "cached"],
+      "properties": {
+        "input": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "New prompt tokens only."
+        },
+        "output": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "cached": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Reused prompt tokens."
+        }
+      }
+    },
+    "context_peak": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Largest single prompt size observed."
+    },
+    "models": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "integer",
+        "minimum": 1
+      }
+    },
+    "subagents": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "skills_activated": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "integer",
+        "minimum": 1
+      }
+    },
+    "skills_exposed_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "skills_exposed_unused": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "tool_calls": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "integer",
+        "minimum": 1
+      }
+    },
+    "tool_errors": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "integer",
+        "minimum": 1
+      }
+    },
+    "errors": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 10
+    }
+  }
+}

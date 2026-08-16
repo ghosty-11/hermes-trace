@@ -260,6 +260,14 @@ class _Tracer:
                 "skills_activated": {},  # name -> times activated
                 "tools": {},            # name -> count
                 "tool_errors": {},      # name -> count
+                # Output volume, per tool. `result_chars` is what the model was
+                # handed; `raw_max` is the pre-cap size a tool reported for
+                # itself, so the gap between them is the output a filter could
+                # have preserved instead of the tool dropping it.
+                "tool_result_chars": {},     # name -> chars the model read
+                "tool_result_max_chars": {},  # name -> largest single result
+                "tool_output_capped": {},    # name -> results the tool truncated
+                "tool_raw_max_chars": {},    # name -> largest pre-cap output
                 "api_calls": 0,
                 "api_seconds": 0.0,
                 "tokens": {"input": 0, "output": 0, "cached": 0},
@@ -334,6 +342,14 @@ class _Tracer:
                 f"skills_exposed_unused: {json.dumps(unused)}",
                 f"tool_calls: {json.dumps(snapshot['tools'])}",
                 f"tool_errors: {json.dumps(snapshot['tool_errors'])}",
+                f"tool_result_chars: {json.dumps(snapshot['tool_result_chars'])}"
+                "  # chars of tool output the model actually read",
+                f"tool_result_max_chars: {json.dumps(snapshot['tool_result_max_chars'])}"
+                "  # largest single result per tool",
+                f"tool_output_capped: {json.dumps(snapshot['tool_output_capped'])}"
+                "  # results the tool truncated before the model saw them",
+                f"tool_raw_max_chars: {json.dumps(snapshot['tool_raw_max_chars'])}"
+                "  # largest pre-cap output; the gap to result_max is what was dropped",
                 f"errors: {json.dumps(snapshot['errors'][:10])}",
             ]
 
@@ -446,6 +462,27 @@ def _on_pre_tool_call(**kw: Any) -> None:
         pass
 
 
+def _raw_output_chars(text: str) -> int | None:
+    """Pre-cap output size a tool reported for itself, or None.
+
+    `post_tool_call` fires after the tool's own limit, so the string length is
+    what the model paid and says nothing about what was dropped. The terminal
+    tool returns a JSON document carrying `output_total_chars` whenever its cap
+    fired; that field is the only honest source for the pre-cap size. Parsing is
+    gated on the key appearing, so an ordinary result costs one substring scan.
+    """
+    if "output_total_chars" not in text:
+        return None
+    try:
+        payload = json.loads(text)
+    except (TypeError, ValueError):
+        return None
+    value = payload.get("output_total_chars") if isinstance(payload, dict) else None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return int(value)
+
+
 def _on_post_tool_call(**kw: Any) -> None:
     try:
         sid = _sid(kw)
@@ -456,12 +493,28 @@ def _on_post_tool_call(**kw: Any) -> None:
         # to look at, never as an assertion that something broke.
         text = result if isinstance(result, str) else str(result)
         looks_bad = text[:200].lower().lstrip().startswith(("error", "failed", "traceback"))
-        if looks_bad:
-            with _T._lock:
-                session = _T._session(sid)
+        chars = len(text)
+        raw_chars = _raw_output_chars(text)
+        cap = int(_config().get("max_tools_tracked", 400))
+        with _T._lock:
+            session = _T._session(sid)
+            if looks_bad:
                 session["tool_errors"][name] = session["tool_errors"].get(name, 0) + 1
+            # Bounded exactly like `tools`: a session that touches hundreds of
+            # distinct tools must not grow the card without limit.
+            totals = session["tool_result_chars"]
+            if len(totals) < cap or name in totals:
+                totals[name] = totals.get(name, 0) + chars
+                peaks = session["tool_result_max_chars"]
+                peaks[name] = max(peaks.get(name, 0), chars)
+                if raw_chars is not None:
+                    capped = session["tool_output_capped"]
+                    capped[name] = capped.get(name, 0) + 1
+                    raw_peaks = session["tool_raw_max_chars"]
+                    raw_peaks[name] = max(raw_peaks.get(name, 0), raw_chars)
         _T.event("tool_after", sid, tool=name, looks_failed=looks_bad,
-                 result=result, tool_call_id=kw.get("tool_call_id"))
+                 result=result, result_chars=chars, result_raw_chars=raw_chars,
+                 tool_call_id=kw.get("tool_call_id"))
     except Exception:
         pass
 

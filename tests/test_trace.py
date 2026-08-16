@@ -217,6 +217,75 @@ class TraceTestCase(unittest.TestCase):
         self.assertEqual(json.loads(card["tokens"])["input"], 10_000)
         self.assertEqual(card["context_peak"], "20000")
 
+    # ---- output volume ----------------------------------------------------
+    def test_tool_result_size_is_recorded_per_tool(self):
+        """Card must say how much tool output the model actually read.
+
+        Without a size the trace cannot answer whether output filtering is
+        worth building: `result` is clipped to 400 chars, so every result
+        looks the same size in the event stream.
+        """
+        self.start()
+        self.fire("post_tool_call", session_id="s1", tool_name="terminal",
+                  result="x" * 5_000)
+        self.fire("post_tool_call", session_id="s1", tool_name="terminal",
+                  result="y" * 1_000)
+        self.fire("post_tool_call", session_id="s1", tool_name="read_file",
+                  result="z" * 10)
+        self.fire("on_session_end", session_id="s1", completed=True)
+
+        card = self.card()
+        self.assertEqual(json.loads(card["tool_result_chars"]),
+                         {"terminal": 6_000, "read_file": 10})
+        self.assertEqual(json.loads(card["tool_result_max_chars"]),
+                         {"terminal": 5_000, "read_file": 10})
+
+    def test_capped_output_reports_the_size_before_the_cap(self):
+        """The headroom question: how much output the tool dropped.
+
+        `post_tool_call` fires AFTER the terminal tool's own 50k cap, so the
+        model-bound length alone can never show a 240k command. The tool
+        reports the pre-cap total in its result; that is the number that says
+        whether a filter would have preserved anything.
+        """
+        result = json.dumps({
+            "output": "head … tail",
+            "exit_code": 0,
+            "output_total_chars": 240_000,
+            "full_output_path": "/tmp/hermes-terminal/out.log",
+            "truncation_note": "Output exceeded the capture window",
+        })
+        self.start()
+        self.fire("post_tool_call", session_id="s1", tool_name="terminal", result=result)
+        self.fire("on_session_end", session_id="s1", completed=True)
+
+        card = self.card()
+        self.assertEqual(json.loads(card["tool_output_capped"]), {"terminal": 1})
+        self.assertEqual(json.loads(card["tool_raw_max_chars"]), {"terminal": 240_000})
+        # What the model read is the string it was handed, never the pre-cap size.
+        self.assertEqual(json.loads(card["tool_result_max_chars"])["terminal"],
+                         len(result))
+
+    def test_output_within_the_cap_is_not_reported_as_capped(self):
+        """A count that fires on every call measures traffic, not truncation."""
+        self.start()
+        self.fire("post_tool_call", session_id="s1", tool_name="terminal",
+                  result=json.dumps({"output": "tiny", "exit_code": 0}))
+        self.fire("on_session_end", session_id="s1", completed=True)
+
+        card = self.card()
+        self.assertEqual(json.loads(card["tool_output_capped"]), {})
+        self.assertEqual(json.loads(card["tool_raw_max_chars"]), {})
+
+    def test_recorded_size_is_not_the_clipped_size(self):
+        """`result` is bounded to 400 chars; its measurement must not be."""
+        self.start()
+        self.fire("post_tool_call", session_id="s1", tool_name="terminal",
+                  result="x" * 50_000)
+        after = [e for e in self.events() if e.get("kind") == "tool_after"]
+        self.assertTrue(after)
+        self.assertEqual(after[0]["result_chars"], 50_000)
+
     def test_emitted_events_agree_with_the_published_schema(self):
         """A schema nothing validates against is documentation, not a contract.
 

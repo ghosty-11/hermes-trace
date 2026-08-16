@@ -140,6 +140,10 @@
         "tool": { "type": "string" },
         "looks_failed": { "type": "boolean" },
         "result": {},
+        "result_chars": { "type": "integer", "minimum": 0 },
+        "result_raw_chars": {
+          "anyOf": [{ "type": "integer", "minimum": 0 }, { "type": "null" }]
+        },
         "tool_call_id": {
           "anyOf": [{ "type": "string" }, { "type": "null" }]
         }
@@ -152,6 +156,8 @@
         "tool",
         "looks_failed",
         "result",
+        "result_chars",
+        "result_raw_chars",
         "tool_call_id"
       ],
       "additionalProperties": false

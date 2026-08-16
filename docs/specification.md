@@ -73,6 +73,8 @@ Fired by `post_tool_call`.
 | `tool` | string | Tool name. |
 | `looks_failed` | boolean | Heuristic signal that the result text begins with an error/failure marker. |
 | `result` | any | Tool result, before clipping. |
+| `result_chars` | integer | Length of the result the model was handed, measured before clipping. |
+| `result_raw_chars` | integer or `null` | Pre-cap output size the tool reported for itself (`output_total_chars`); `null` when the tool reported none. |
 | `tool_call_id` | string or `null` | Upstream tool-call identifier. |
 
 ### `api_after`
@@ -142,6 +144,10 @@ are used in [`schemas/trace-card.schema.json`](../schemas/trace-card.schema.json
 | `skills_exposed_unused` | array | Sorted list of exposed skills that were never activated. |
 | `tool_calls` | object | Map of tool name to call count. |
 | `tool_errors` | object | Map of tool name to heuristic failure count. |
+| `tool_result_chars` | object | Map of tool name to total chars of result the model read. |
+| `tool_result_max_chars` | object | Map of tool name to largest single result. |
+| `tool_output_capped` | object | Map of tool name to count of results the tool truncated before the model saw them. |
+| `tool_raw_max_chars` | object | Map of tool name to largest pre-cap output size the tool reported. |
 | `errors` | array | Up to 10 API error strings observed. |
 
 ## Session lifetime semantics

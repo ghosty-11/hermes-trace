@@ -64,6 +64,18 @@ largest prompt window became. These are observed totals, not provider billing re
 Read `skills_exposed_unused`. Compare it with `skills_activated` and
 `skills_exposed_count`.
 
+### Is tool output expensive on this seat?
+
+`tool_result_chars` is what the model read per tool; `tool_result_max_chars` is the largest
+single result. Those two alone understate the traffic, because a tool truncates before this
+plugin sees the result: `tool_output_capped` counts the results a tool cut, and
+`tool_raw_max_chars` is the largest pre-cap size the tool reported for itself. A large gap
+between `tool_raw_max_chars` and `tool_result_max_chars` is output being dropped, not output
+being paid for.
+
+A tool that reports no pre-cap size contributes to the first two fields only; absence there
+means "not reported", never "not truncated".
+
 ## Retention and disk sizing
 
 Worst-case steady-state event storage is roughly `max_event_file_mb × keep_event_days`.

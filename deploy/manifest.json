@@ -1,0 +1,7 @@
+{
+  "version": 1,
+  "module": "hermes-trace",
+  "artifacts": [
+    {"source": "plugin", "destination": "plugins/hermes-trace", "kind": "tree"}
+  ]
+}

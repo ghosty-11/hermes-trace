@@ -19,6 +19,7 @@
     "models",
     "subagents",
     "skills_activated",
+    "skills_exposed_def",
     "skills_exposed_count",
     "skills_exposed_unused",
     "tool_calls",
@@ -99,15 +100,23 @@
         "minimum": 1
       }
     },
-    "skills_exposed_count": {
+    "skills_exposed_def": {
       "type": "integer",
-      "minimum": 0
+      "minimum": 2,
+      "description": "Counter definition version. 2 = names in the rendered skills index; 1 (historical) = installed-minus-disabled configuration."
+    },
+    "skills_exposed_count": {
+      "anyOf": [
+        { "type": "integer", "minimum": 0 },
+        { "type": "string", "enum": ["unknown"] }
+      ],
+      "description": "Distinct names the rendered skills index offered during the session; 'unknown' when no rendered-index evidence was obtainable."
     },
     "skills_exposed_unused": {
-      "type": "array",
-      "items": {
-        "type": "string"
-      }
+      "anyOf": [
+        { "type": "array", "items": { "type": "string" } },
+        { "type": "string", "enum": ["unknown"] }
+      ]
     },
     "tool_calls": {
       "type": "object",
@@ -154,7 +163,8 @@
     "errors": {
       "type": "array",
       "items": {
-        "type": "string"
+        "type": "string",
+        "description": "Content-free token: exception class and message length, e.g. HTTPError(214)."
       },
       "maxItems": 10
     }

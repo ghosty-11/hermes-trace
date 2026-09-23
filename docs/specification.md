@@ -25,6 +25,16 @@ Every event object carries these fields:
 `kind`-specific fields are listed below. Optional fields may be `null` or an empty value;
 required fields are always present.
 
+## Content-free capture
+
+Events are the wide-open artefact, so every field is an allowlisted content-free value,
+projected BEFORE any formatting: identifiers (bounded to 128 characters), booleans,
+numbers and null. Tool arguments and results appear only as counts and sizes; arbitrary
+error text is reduced to its exception class and length; any other object is omitted.
+Clipping is a size bound, not a redaction — a clip window over a secret keeps the
+secret — so there is no clip window, and `str()`/`default=str` never runs downstream of
+the gate. A value that cannot be projected is dropped, not stringified.
+
 ### `session_start`
 
 Fired by `on_session_start`.
@@ -33,7 +43,8 @@ Fired by `on_session_start`.
 |---|---|---|
 | `platform` | string or `null` | Chat surface or other platform identifier. |
 | `boundary_reason` | string or `null` | Reason the session started this turn, if supplied. |
-| `skills_exposed_count` | integer | Number of skills available to the profile at this moment. |
+| `skills_exposed_count` | integer or `null` | Names in this surface's rendered skills index at this moment. `null` when that evidence is unavailable — reported as unknown, never as a configured count. |
+| `skills_exposed_def` | integer | Counter definition version (currently `2`): `2` counts rendered-index names; `1` (historical) counted installed-minus-disabled configuration. Compare baselines only within one definition. |
 
 ### `session_end`
 
@@ -60,7 +71,8 @@ Fired by `pre_tool_call`.
 | Field | Type | Meaning |
 |---|---|---|
 | `tool` | string | Tool name. |
-| `args` | any | Tool arguments, before clipping. |
+| `args_count` | integer or `null` | Number of arguments. `null` when the args value was not a plain mapping: unknown objects are omitted, never stringified. |
+| `args_chars` | integer or `null` | Serialized size of the arguments. Argument contents are never captured in any form. |
 | `tool_call_id` | string or `null` | Upstream tool-call identifier. |
 | `turn_id` | string or `null` | Upstream turn identifier. |
 
@@ -72,8 +84,7 @@ Fired by `post_tool_call`.
 |---|---|---|
 | `tool` | string | Tool name. |
 | `looks_failed` | boolean | Heuristic signal that the result text begins with an error/failure marker. |
-| `result` | any | Tool result, before clipping. |
-| `result_chars` | integer | Length of the result the model was handed, measured before clipping. |
+| `result_chars` | integer | Length of the result the model was handed. Result contents are never captured in any form. |
 | `result_raw_chars` | integer or `null` | Pre-cap output size the tool reported for itself (`output_total_chars`); `null` when the tool reported none. |
 | `tool_call_id` | string or `null` | Upstream tool-call identifier. |
 
@@ -99,7 +110,8 @@ Fired by `api_request_error`.
 
 | Field | Type | Meaning |
 |---|---|---|
-| `error` | string | Error detail, capped to 200 characters. |
+| `error_kind` | string | Exception class name (or `str`/`error`). Error text is arbitrary payload and is never captured. |
+| `error_chars` | integer | Length of the error text. |
 | `model` | string or `null` | Model identifier, if supplied. |
 
 ### `skill`
@@ -140,15 +152,16 @@ are used in [`schemas/trace-card.schema.json`](../schemas/trace-card.schema.json
 | `models` | object | Map of model identifier to call count. |
 | `subagents` | integer | Number of subagent starts observed. |
 | `skills_activated` | object | Map of skill name to activation count. |
-| `skills_exposed_count` | integer | Number of distinct skills available to the profile during the session. |
-| `skills_exposed_unused` | array | Sorted list of exposed skills that were never activated. |
+| `skills_exposed_def` | integer | Counter definition version (currently `2`); see `session_start`. |
+| `skills_exposed_count` | integer or `unknown` | Distinct names the rendered skills index offered during the session. `unknown` when no rendered-index evidence was obtainable. |
+| `skills_exposed_unused` | array or `unknown` | Sorted list of exposed skills that were never activated; `unknown` under the same condition. |
 | `tool_calls` | object | Map of tool name to call count. |
 | `tool_errors` | object | Map of tool name to heuristic failure count. |
 | `tool_result_chars` | object | Map of tool name to total chars of result the model read. |
 | `tool_result_max_chars` | object | Map of tool name to largest single result. |
 | `tool_output_capped` | object | Map of tool name to count of results the tool truncated before the model saw them. |
 | `tool_raw_max_chars` | object | Map of tool name to largest pre-cap output size the tool reported. |
-| `errors` | array | Up to 10 API error strings observed. |
+| `errors` | array | Up to 10 content-free API error tokens (exception class and message length, e.g. `HTTPError(214)`). |
 
 ## Session lifetime semantics
 
@@ -166,9 +179,10 @@ unobserved work.
 All bounds are configurable under the `trace:` block; defaults are listed in
 [`docs/operations.md`](operations.md).
 
-- **Field clipping.** String values are truncated to `max_field_chars` with an ellipsis
-  suffix. Dictionaries and lists are clipped to 32 entries; dictionary keys are clipped to
-  64 characters. Unrepresentable values become the string `<unrepresentable>`.
+- **Content-free projection.** There is no field-clipping knob: payload (arguments,
+  results, error text, unknown objects) is omitted outright, not truncated. Identifier
+  strings are bounded to 128 characters; that bound is a guard against oversized
+  values, not a redaction mechanism.
 - **Per-day event-file size cap.** Each `events/YYYY-MM-DD.jsonl` file stops accepting
   events once it reaches `max_event_file_mb` megabytes. Events for that day are silently
   dropped rather than rotated or split.

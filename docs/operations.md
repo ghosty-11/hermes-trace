@@ -11,7 +11,6 @@ All settings live under the `trace:` block in the Hermes profile config.
 | `max_event_file_mb` | `32` | Per-day event-file size cap in megabytes. |
 | `keep_event_days` | `14` | Number of daily event files to retain. |
 | `max_cards` | `500` | Number of card files to retain. |
-| `max_field_chars` | `400` | String length bound before clipping. |
 | `max_tools_tracked` | `400` | Per-session cap on distinct tool names. |
 
 Trade-offs:
@@ -23,10 +22,13 @@ disk. The cap is per-day, not total.
 - Raising `keep_event_days` extends history; lowering it reduces storage but loses older
 context.
 - Raising `max_cards` keeps more sessions; lowering it drops older cards during pruning.
-- Raising `max_field_chars` captures larger arguments and results; lowering it trims the
-event payload at the cost of detail.
 - Raising `max_tools_tracked` preserves rare tools; once the cap is reached, newly seen
 tools are not counted unless already tracked.
+
+There is deliberately no field-length knob: events carry content-free fields only
+(names, statuses, sizes, counters), projected before any formatting. Payload — tool
+arguments and results, error text, unknown objects — is omitted, not truncated, so there
+is nothing to size.
 
 ## Reading a card
 
@@ -62,7 +64,10 @@ largest prompt window became. These are observed totals, not provider billing re
 ### Which skills were exposed and never activated?
 
 Read `skills_exposed_unused`. Compare it with `skills_activated` and
-`skills_exposed_count`.
+`skills_exposed_count`. Since definition `2` (`skills_exposed_def` on the card) the
+exposed side counts the names in the profile's actually-rendered skills index, and reads
+`unknown` when that evidence is unavailable; a `0` is a rendered-empty index, not a
+count of configured names. Do not compare counts across definitions.
 
 ### Is tool output expensive on this seat?
 

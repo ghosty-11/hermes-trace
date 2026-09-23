@@ -15,7 +15,7 @@ missing field rather than a failed load.
 
 | Hook | Card fields populated by the hook | Fields left empty if absent |
 |---|---|---|
-| `on_session_start` | `platform`, `skills_exposed_count`, `skills_exposed_unused` | `platform` reports `unknown`; skill-exposure fields report zero or empty. |
+| `on_session_start` | `platform`, `skills_exposed_count`, `skills_exposed_def` | `platform` reports `unknown`; skill-exposure fields report null/`unknown`, never a configured count. |
 | `on_session_end` | `boundaries`, non-final card writes | `boundaries` stays zero; no card is written until a terminal hook. |
 | `on_session_finalize` | Final card write and accumulator release | No final card; memory is not released for this id. |
 | `on_session_reset` | Final card write and accumulator release | No final card; memory is not released for this id. |

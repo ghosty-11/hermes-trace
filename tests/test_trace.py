@@ -44,7 +44,14 @@ class _Ctx:
         self.hooks.setdefault(str(name), []).append(handler)
 
 
-class TraceTestCase(unittest.TestCase):
+class TraceHarnessMixin:
+    """Shared fixture for hermes-trace tests: fresh plugin load, a recording
+    hook context, an isolated profile home, and the read-back helpers.
+
+    Deliberately NOT a TestCase and carrying NO ``test_*`` methods: suites
+    mix this in alongside ``unittest.TestCase`` so inherited tests are not
+    re-run once per subclass (same-path padding).
+    """
     maxDiff = None
 
     def setUp(self) -> None:
@@ -100,6 +107,8 @@ class TraceTestCase(unittest.TestCase):
     def start(self, sid: str = "s1", platform: str = "chat") -> None:
         self.fire("on_session_start", session_id=sid, platform=platform)
 
+
+class TraceTestCase(TraceHarnessMixin, unittest.TestCase):
     # ---- profile attribution ---------------------------------------------
     def test_profile_comes_from_the_home_path(self):
         """A card must name the profile that produced it.
@@ -297,8 +306,7 @@ class TraceTestCase(unittest.TestCase):
             (PLUGIN_PATH.parent.parent / "schemas" / "trace-event.schema.json")
             .read_text(encoding="utf-8"))
         defs = schema.get("$defs") or {}
-
-        self.plugin._exposed_skills = lambda: ["alpha"]
+        self.plugin._exposed_skills = lambda *a, **k: ["alpha"]
         self.start()
         self.fire("pre_tool_call", session_id="s1", tool_name="read_file", args={"p": 1})
         self.fire("post_tool_call", session_id="s1", tool_name="read_file", result="ok")
@@ -334,7 +342,7 @@ class TraceTestCase(unittest.TestCase):
 
     def test_exposed_skills_survive_a_boundary(self):
         """The headline field must not be emptied by a turn boundary."""
-        self.plugin._exposed_skills = lambda: ["alpha", "beta", "gamma"]
+        self.plugin._exposed_skills = lambda *a, **k: ["alpha", "beta", "gamma"]
         self.start()
         self.fire("on_skill_lifecycle", session_id="s1", skill_name="beta")
         self.fire("on_session_end", session_id="s1", completed=True)
@@ -407,14 +415,20 @@ class TraceTestCase(unittest.TestCase):
         self.start()
         self.fire("on_session_end", session_id="s1", completed=True)  # must not raise
 
-    def test_captured_values_are_bounded(self):
+    def test_tool_result_payload_is_never_captured(self):
+        """The old contract bounded `result` to 400 chars; the v2 contract
+        (S05/V12) omits payload entirely — a clip window over a secret
+        keeps the secret (E20), so there is no clip window anymore."""
+        secret = "sk-test-" + "a1b2c3d4e5f6" * 60
         self.start()
         self.fire("post_tool_call", session_id="s1", tool_name="read_file",
-                  result="x" * 100_000)
+                  result=secret)
         payloads = [e for e in self.events() if e.get("kind") == "tool_after"]
         self.assertTrue(payloads)
-        self.assertLessEqual(len(payloads[0]["result"]),
-                             self.plugin.DEFAULTS["max_field_chars"] + 1)
+        self.assertNotIn("result", payloads[0])
+        self.assertEqual(payloads[0]["result_chars"], len(secret))
+        for window in (secret[:40], secret[200:240], secret[-40:]):
+            self.assertNotIn(window, json.dumps(payloads[0]))
 
     # ---- configuration ----------------------------------------------------
     def test_trace_directory_is_configurable(self):

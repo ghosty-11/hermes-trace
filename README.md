@@ -30,11 +30,13 @@ TraceCard fields, in order:
 11. `models`
 12. `subagents`
 13. `skills_activated`
-14. `skills_exposed_count`
-15. `skills_exposed_unused`
-16. `tool_calls`
-17. `tool_errors`
-18. `errors`
+14. `skills_exposed_def`
+15. `skills_exposed_count`
+16. `skills_exposed_unused`
+17. `tool_calls`
+18. `tool_errors`
+19. `errors`
+
 
 ## Boundary
 
@@ -45,9 +47,14 @@ Honest limits:
 - `session_seconds` is measured from the first event this process observed for the session id, so it is a floor, not the session's true age. A restart or a plugin loaded mid-session cannot recover unobserved work.
 - `on_session_end` is a turn boundary, not a terminal event. On a persistent chat surface it may fire many times for one session id; the plugin accumulates across it and only releases state on `on_session_finalize` or `on_session_reset`.
 - `tool_errors` is a heuristic on result text, not a status code. It may misclassify ambiguous outcomes.
+- Events carry content-free fields only (names, statuses, sizes, counters), projected
+  before any formatting; tool arguments/results and error text are omitted, never
+  clipped, and unavailable exposure evidence reports `unknown`, never a configured count.
+  `skills_exposed_def` versions the counter definition; compare baselines within one
+  definition.
 - Profile attribution comes from the Hermes home path via the framework's `get_active_profile_name()`, never from a `HERMES_PROFILE` environment variable.
 
-Disk footprint is bounded by the `trace:` config keys: `max_event_file_mb`, `keep_event_days`, `max_cards`, `max_field_chars`, and `max_tools_tracked`.
+Disk footprint is bounded by the `trace:` config keys: `max_event_file_mb`, `keep_event_days`, `max_cards`, and `max_tools_tracked`.
 
 ## Layout
 

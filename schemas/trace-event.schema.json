@@ -51,8 +51,13 @@
           "anyOf": [{ "type": "string" }, { "type": "null" }]
         },
         "skills_exposed_count": {
+          "anyOf": [{ "type": "integer", "minimum": 0 }, { "type": "null" }],
+          "description": "Names in this surface's rendered skills index; null when that evidence is unavailable (unknown)."
+        },
+        "skills_exposed_def": {
           "type": "integer",
-          "minimum": 0
+          "minimum": 2,
+          "description": "Counter definition version. 2 = rendered-index names; 1 (historical) = installed-minus-disabled configuration."
         }
       },
       "required": [
@@ -62,7 +67,8 @@
         "profile",
         "platform",
         "boundary_reason",
-        "skills_exposed_count"
+        "skills_exposed_count",
+        "skills_exposed_def"
       ],
       "additionalProperties": false
     },
@@ -110,7 +116,14 @@
         "session_id": { "type": "string" },
         "profile": { "type": "string" },
         "tool": { "type": "string" },
-        "args": {},
+        "args_count": {
+          "anyOf": [{ "type": "integer", "minimum": 0 }, { "type": "null" }],
+          "description": "Number of arguments; null when the args value was not a plain mapping (omitted, never stringified)."
+        },
+        "args_chars": {
+          "anyOf": [{ "type": "integer", "minimum": 0 }, { "type": "null" }],
+          "description": "Serialized size of the arguments. Argument CONTENTS are never captured in any form."
+        },
         "tool_call_id": {
           "anyOf": [{ "type": "string" }, { "type": "null" }]
         },
@@ -124,7 +137,8 @@
         "session_id",
         "profile",
         "tool",
-        "args",
+        "args_count",
+        "args_chars",
         "tool_call_id",
         "turn_id"
       ],
@@ -139,7 +153,6 @@
         "profile": { "type": "string" },
         "tool": { "type": "string" },
         "looks_failed": { "type": "boolean" },
-        "result": {},
         "result_chars": { "type": "integer", "minimum": 0 },
         "result_raw_chars": {
           "anyOf": [{ "type": "integer", "minimum": 0 }, { "type": "null" }]
@@ -155,7 +168,6 @@
         "profile",
         "tool",
         "looks_failed",
-        "result",
         "result_chars",
         "result_raw_chars",
         "tool_call_id"
@@ -205,12 +217,16 @@
         "kind": { "const": "api_error" },
         "session_id": { "type": "string" },
         "profile": { "type": "string" },
-        "error": { "type": "string" },
+        "error_kind": {
+          "type": "string",
+          "description": "Exception class name (or 'str'/'error'). Error TEXT is arbitrary payload and is never captured."
+        },
+        "error_chars": { "type": "integer", "minimum": 0 },
         "model": {
           "anyOf": [{ "type": "string" }, { "type": "null" }]
         }
       },
-      "required": ["ts", "kind", "session_id", "profile", "error", "model"],
+      "required": ["ts", "kind", "session_id", "profile", "error_kind", "error_chars", "model"],
       "additionalProperties": false
     },
     "skill": {

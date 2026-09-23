@@ -1,6 +1,6 @@
 # Security policy
 
-This package is a local observability boundary. It records tool names, clipped tool arguments and results, model names, token counts, and skill names. Trace output is as sensitive as the conversations it observes and must not be published, shared, or archived without review.
+This package is a local observability boundary. It records tool names, model names, token counts, skill names and content-free tool metrics (argument/result sizes, never contents). Trace output is as sensitive as the conversations it observes and must not be published, shared, or archived without review.
 
 Reports about unauthorised trace directory access, information leakage via trace files, retention bypass, configuration injection, or unsafe installation guidance are security-relevant.
 
@@ -29,7 +29,6 @@ The `trace:` config block controls disk footprint and retention. Review these ke
 - `max_event_file_mb`: per-event-file size ceiling.
 - `keep_event_days`: retention window for event files.
 - `max_cards`: maximum TraceCards to retain.
-- `max_field_chars`: per-field string clip limit.
 - `max_tools_tracked`: maximum distinct tool names tracked per session.
 
 These caps limit accidental growth; they do not make trace files safe to publish.

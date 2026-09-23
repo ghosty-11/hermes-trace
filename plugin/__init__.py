@@ -51,6 +51,10 @@ HOW TO READ IT — AND HOW NOT TO
 -------------------------------
 ``skills_exposed_unused`` is the field this exists for, and it is the easiest
 one to misuse. **A skill appearing there is not evidence it should be pruned.**
+Since definition v2 the exposure side counts the names in the profile's
+actually-rendered skills index (``skills_exposed_def`` says which definition
+produced a number), and reports ``unknown`` when that evidence is
+unavailable — never a configured count standing in for evidence (E20).
 
 On a young deployment most skills are unused because nothing has needed them
 yet, not because they are dead weight. Treat a long unused list as the expected
@@ -83,6 +87,12 @@ RULES IT FOLLOWS
   observability tool that fills the disk has caused an outage, not prevented one.
 * **Silent.** It emits nothing to any channel. Reading it is a separate job's
   business.
+* **Content-free capture.** Events carry an allowlist of content-free fields
+  (names, statuses, sizes, durations, counters), projected BEFORE any
+  formatting. Arguments, results, arbitrary error text and unknown objects
+  are omitted by default; clipping is a size bound, not a redaction, and no
+  ``str()``/``default=str`` may reintroduce content downstream of the gate
+  (E20 verified a private fixture string surviving the old clip window).
 """
 
 from __future__ import annotations
@@ -105,12 +115,20 @@ DEFAULTS: dict[str, Any] = {
     "max_event_file_mb": 32,
     "keep_event_days": 14,
     "max_cards": 500,
-    "max_field_chars": 400,
     "max_tools_tracked": 400,
 }
 
+# Version of the skills_exposed counter definition. v1 counted
+# installed-minus-disabled names from configuration (E20: it reported seven
+# on a seat whose rendered index was empty). v2 counts the names in the
+# profile's actually-rendered skills index, per surface, and reports
+# unknown when that evidence is unavailable. Cards and events carry this
+# number so a stored baseline is never silently compared across versions.
+SKILLS_EXPOSED_DEF = 2
+
 _EXPOSED_TTL_S = 600
-_EXPOSED_CACHE: dict[str, Any] = {"at": 0.0, "names": [], "home": ""}
+# cache key "home|platform" -> {"at": float, "names": list | None}
+_EXPOSED_CACHE: dict[str, dict[str, Any]] = {}
 
 
 # ---- environment resolution ------------------------------------------------
@@ -180,21 +198,70 @@ def _trace_dir(cfg: dict[str, Any] | None = None) -> Path:
     return Path(configured) if configured else _home() / "trace"
 
 
-def _clip(value: Any, limit: int) -> Any:
-    """Bound a captured value. Strings truncate; everything else summarises."""
+# ---- content-free projection -------------------------------------------------
+# The event stream is the wide-open artefact: one JSON line per event, and
+# anything with the trace directory can read it. So the capture rule (S05,
+# V12, and E20's verification that a private fixture string survived the
+# old clipping window) is an allowlist applied BEFORE any formatting:
+# tool name, status, sizes, durations and counters pass; arguments,
+# results, arbitrary error text and unknown objects are omitted by
+# default. Clipping was never redaction — a 400-character window over a
+# secret keeps the secret — and `str()`/`default=str` must never get the
+# chance to reintroduce content downstream of the gate.
+
+_IDENT_LIMIT = 128
+
+
+def _ident(value: Any, limit: int = _IDENT_LIMIT) -> str | None:
+    """A bounded identifier string (tool, session, model, provider, skill
+    names; ids), or None. Identifiers are framework vocabulary, not
+    payload; the bound keeps an oversized hostile value from turning an
+    identifier field into content capture. Non-strings are omitted."""
+    if not isinstance(value, str):
+        return None
+    return value if len(value) <= limit else value[:limit]
+
+
+def _num(value: Any) -> Any:
+    """A JSON scalar, or None. Dicts, lists and objects are omitted — never
+    stringified, at any point in the pipeline."""
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    return None
+
+
+def _error_shape(error: Any) -> tuple[str, int]:
+    """(class name, message length): the content-free identity of an error.
+    The text itself is arbitrary payload — provider bodies quote request
+    content — so only its class and its size survive."""
+    if error is None:
+        return ("error", 0)
+    kind = type(error).__name__ if isinstance(error, BaseException) else "str"
     try:
-        if isinstance(value, str):
-            return value if len(value) <= limit else value[:limit] + "…"
-        if isinstance(value, (int, float, bool)) or value is None:
-            return value
-        if isinstance(value, dict):
-            return {str(k)[:64]: _clip(v, limit) for k, v in list(value.items())[:32]}
-        if isinstance(value, (list, tuple)):
-            return [_clip(v, limit) for v in list(value)[:32]]
-        text = str(value)
-        return text if len(text) <= limit else text[:limit] + "…"
+        size = len(str(error))
     except Exception:
-        return "<unrepresentable>"
+        size = 0
+    return (kind, size)
+
+
+def _args_shape(args: Any) -> tuple[int | None, int | None]:
+    """(count, serialized size) of a tool-args mapping — sizes only.
+
+    A non-dict value is an unknown object and is omitted outright, before
+    any stringification. `json.dumps(..., default=str)` here measures size
+    only: the string it builds for an exotic value never leaves this
+    function, only its length does.
+    """
+    if not isinstance(args, dict):
+        return (None, None)
+    try:
+        size = len(json.dumps(args, default=str))
+    except Exception:
+        try:
+            size = len(repr(args))
+        except Exception:
+            return (len(args), None)
+    return (len(args), size)
 
 
 class _Tracer:
@@ -219,7 +286,11 @@ class _Tracer:
             except OSError:
                 pass
             with path.open("a", encoding="utf-8") as handle:
-                handle.write(json.dumps(event, ensure_ascii=False, default=str) + "\n")
+                # No `default=str`: an unprojected value must fail this one
+                # write (dropped above) rather than be stringified into the
+                # file. The projection gate makes such values impossible by
+                # construction; this is the second lock on the same door.
+                handle.write(json.dumps(event, ensure_ascii=False) + "\n")
         except Exception:
             logger.debug("hermes-trace: event write failed", exc_info=True)
 
@@ -256,7 +327,8 @@ class _Tracer:
                 "platform": "",
                 "profile": _profile(),
                 "boundaries": 0,        # observed turn/session-end boundaries
-                "skills_exposed": [],   # available to choose from
+                "skills_exposed": [],   # names the rendered index offered
+                "skills_exposed_known": False,  # any successful render seen
                 "skills_activated": {},  # name -> times activated
                 "tools": {},            # name -> count
                 "tool_errors": {},      # name -> count
@@ -280,17 +352,28 @@ class _Tracer:
         return session
 
     def event(self, kind: str, sid: str, **fields: Any) -> None:
-        """Record one event. Never raises, never blocks on anything real."""
+        """Record one event. Never raises, never blocks on anything real.
+
+        This is the single gate every field passes through: identifiers are
+        bounded strings, scalars pass, and anything else — dicts, lists,
+        objects, the shape of an argument or a result — becomes None
+        (omitted from the record). Handlers still project their own fields;
+        this second gate is what makes reintroduction a two-mistake event.
+        """
         try:
             cfg = _config()
-            limit = int(cfg.get("max_field_chars", 400))
             payload = {
                 "ts": round(time.time(), 3),
                 "kind": kind,
-                "session_id": str(sid or ""),
-                "profile": _profile(),
-                **{k: _clip(v, limit) for k, v in fields.items()},
+                "session_id": _ident(str(sid or "")) or "",
+                "profile": _ident(_profile()) or "",
             }
+            for key, value in fields.items():
+                if isinstance(value, str):
+                    value = _ident(value)
+                elif not (value is None or isinstance(value, (bool, int, float))):
+                    value = None
+                payload[key] = value
             self._write_event(payload, cfg)
         except Exception:
             logger.debug("hermes-trace: event failed", exc_info=True)
@@ -310,12 +393,17 @@ class _Tracer:
                     return
                 if final:
                     self._sessions.pop(sid, None)
-                snapshot = json.loads(json.dumps(session, default=str))
+                snapshot = json.loads(json.dumps(session))
+            # ^ no `default=str`: the accumulator holds projected scalars by
+            # construction, and a non-JSON value here should fail the card
+            # write (caught below) rather than stringify payload into it.
 
             cfg = _config()
             elapsed = max(0.0, time.time() - float(snapshot["first_seen_at"]))
+            known = bool(snapshot.get("skills_exposed_known"))
             exposed = {name for name in snapshot["skills_exposed"] if name}
-            unused = sorted(exposed - set(snapshot["skills_activated"]))
+            unused = (sorted(exposed - set(snapshot["skills_activated"]))
+                      if known else None)
 
             lines = [
                 "# hermes-trace TraceCard — what this session actually did.",
@@ -338,8 +426,11 @@ class _Tracer:
                 f"models: {json.dumps(snapshot['models'])}",
                 f"subagents: {snapshot['subagents']}",
                 f"skills_activated: {json.dumps(snapshot['skills_activated'])}",
-                f"skills_exposed_count: {len(exposed)}",
-                f"skills_exposed_unused: {json.dumps(unused)}",
+                f"skills_exposed_def: {SKILLS_EXPOSED_DEF}"
+                "  # v2 = names in the rendered skills index, not configuration",
+                f"skills_exposed_count: {len(exposed) if known else 'unknown'}",
+                f"skills_exposed_unused: "
+                f"{json.dumps(unused) if unused is not None else 'unknown'}",
                 f"tool_calls: {json.dumps(snapshot['tools'])}",
                 f"tool_errors: {json.dumps(snapshot['tool_errors'])}",
                 f"tool_result_chars: {json.dumps(snapshot['tool_result_chars'])}"
@@ -372,25 +463,83 @@ _T = _Tracer()
 # anything from an observer hook risks influencing control flow, which this
 # plugin must never do.
 
-def _exposed_skills() -> list[str]:
-    """Skills this profile could have chosen from, right now.
+def _names_from_rendered_index(prompt: str) -> list[str] | None:
+    """Parse skill names out of a rendered skills index.
 
-    Cached briefly and keyed by home, so a multiplexed process cannot serve one
-    profile's skill list to another.
+    The renderer's own contract (agent/prompt_builder.py, `_render_skills_
+    index`): entries are `    - name` or `    - name: description` lines
+    under category headers, and a demoted category collapses to one
+    `  category [names only]: a, b, c` line. "" is the renderer's explicit
+    "nothing to list" and reads as ZERO names. A non-empty prompt without
+    the `<available_skills>` block is a format this parser does not
+    understand: that is unknown (None), never zero and never a guess — the
+    configured-count bug (E20) was exactly a guess standing in for
+    evidence.
     """
-    home = str(_home())
-    now = time.time()
-    if _EXPOSED_CACHE["home"] == home and now - float(_EXPOSED_CACHE["at"]) < _EXPOSED_TTL_S:
-        return list(_EXPOSED_CACHE["names"])
-    try:
-        from hermes_cli.skills_config import _list_all_skills, get_disabled_skills
-        from hermes_cli.config import load_config
-        installed = {s.get("name") for s in _list_all_skills() if s.get("name")}
-        names = sorted(installed - set(get_disabled_skills(load_config())))
-        _EXPOSED_CACHE.update({"at": now, "names": names, "home": home})
-        return list(names)
-    except Exception:
+    if prompt == "":
         return []
+    start = prompt.find("<available_skills>")
+    end = prompt.find("</available_skills>")
+    if start < 0 or end < start:
+        return None
+    names: set[str] = set()
+    for line in prompt[start:end].splitlines()[1:]:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if stripped.startswith("- "):
+            entry = stripped[2:]
+            name = entry.split(":", 1)[0].strip()
+            if name:
+                names.add(name)
+            continue
+        _, marker, tail = stripped.partition("[names only]:")
+        if marker:
+            for name in tail.split(","):
+                name = name.strip()
+                if name:
+                    names.add(name)
+        # everything else is a category header; it carries no names
+    return sorted(names)
+
+
+def _rendered_skills_prompt() -> str:
+    """The profile's actually-rendered skills index, from the same builder
+    that produces the model's prompt. `skills_dir_override` pins home
+    resolution explicitly (the hook worker inherits the session's
+    ContextVars, but a thread that lost them must not silently render the
+    launch profile's index); the session-platform gate inside the builder
+    resolves per-surface disabled lists from that same context.
+
+    Tool-conditioned skills are not filtered here (the agent's live tool
+    set is not reachable from an observer), so the count is the index the
+    surface renders before tool-condition gating — an upper bound by that
+    one narrow rule, exact for everything else.
+    """
+    from agent.prompt_builder import build_skills_system_prompt
+    return build_skills_system_prompt(skills_dir_override=_home() / "skills")
+
+
+def _exposed_skills(platform: Any = None) -> list[str] | None:
+    """Names this surface's rendered skills index actually offered, or None
+    when that evidence is unavailable.
+
+    Cached briefly, keyed by home AND platform (per-surface disabled lists
+    differ), so a multiplexed process cannot serve one profile's index to
+    another. Definition v2 — see SKILLS_EXPOSED_DEF.
+    """
+    key = f"{_home()}|{platform or ''}"
+    now = time.time()
+    cached = _EXPOSED_CACHE.get(key)
+    if cached and now - float(cached["at"]) < _EXPOSED_TTL_S:
+        names = cached["names"]
+        return list(names) if names is not None else None
+    try:
+        names = _names_from_rendered_index(_rendered_skills_prompt())
+    except Exception:
+        names = None
+    _EXPOSED_CACHE[key] = {"at": now, "names": names}
+    return list(names) if names is not None else None
 
 
 def _sid(kw: dict) -> str:
@@ -400,18 +549,23 @@ def _sid(kw: dict) -> str:
 def _on_session_start(**kw: Any) -> None:
     try:
         sid = _sid(kw)
-        exposed = _exposed_skills()
+        exposed = _exposed_skills(kw.get("platform"))
         with _T._lock:
             session = _T._session(sid)
-            session["platform"] = str(kw.get("platform") or "") or session["platform"]
-            if exposed:
+            session["platform"] = (_ident(kw.get("platform"))
+                                   or session["platform"])
+            if exposed is not None:
                 # Union, never replace: a re-started id keeps what it could
-                # already have chosen from.
+                # already have chosen from. An unavailable index leaves the
+                # earlier evidence standing; it never erases it.
                 session["skills_exposed"] = sorted(
                     set(session["skills_exposed"]) | set(exposed))
+                session["skills_exposed_known"] = True
         _T.event("session_start", sid, platform=kw.get("platform"),
                  boundary_reason=kw.get("boundary_reason"),
-                 skills_exposed_count=len(exposed))
+                 skills_exposed_count=(len(exposed)
+                                       if exposed is not None else None),
+                 skills_exposed_def=SKILLS_EXPOSED_DEF)
     except Exception:
         pass
 
@@ -450,13 +604,17 @@ def _on_session_reset(**kw: Any) -> None:
 def _on_pre_tool_call(**kw: Any) -> None:
     try:
         sid = _sid(kw)
-        name = str(kw.get("tool_name") or "")
+        name = _ident(kw.get("tool_name")) or ""
+        args_count, args_chars = _args_shape(kw.get("args"))
         cap = int(_config().get("max_tools_tracked", 400))
         with _T._lock:
             session = _T._session(sid)
             if len(session["tools"]) < cap or name in session["tools"]:
                 session["tools"][name] = session["tools"].get(name, 0) + 1
-        _T.event("tool_before", sid, tool=name, args=kw.get("args"),
+        # Arguments are content; only their count and serialized size are
+        # content-free, and a non-dict args value is omitted entirely.
+        _T.event("tool_before", sid, tool=name, args_count=args_count,
+                 args_chars=args_chars,
                  tool_call_id=kw.get("tool_call_id"), turn_id=kw.get("turn_id"))
     except Exception:
         pass
@@ -486,11 +644,13 @@ def _raw_output_chars(text: str) -> int | None:
 def _on_post_tool_call(**kw: Any) -> None:
     try:
         sid = _sid(kw)
-        name = str(kw.get("tool_name") or "")
+        name = _ident(kw.get("tool_name")) or ""
         result = kw.get("result")
         # A tool "error" here is a heuristic on the result text, not a status
         # code — Hermes returns tool failures as content. Recorded as a signal
-        # to look at, never as an assertion that something broke.
+        # to look at, never as an assertion that something broke. The text
+        # itself never leaves this function: only its length, the pre-cap
+        # size it may report, and the boolean heuristic do.
         text = result if isinstance(result, str) else str(result)
         looks_bad = text[:200].lower().lstrip().startswith(("error", "failed", "traceback"))
         chars = len(text)
@@ -512,8 +672,10 @@ def _on_post_tool_call(**kw: Any) -> None:
                     capped[name] = capped.get(name, 0) + 1
                     raw_peaks = session["tool_raw_max_chars"]
                     raw_peaks[name] = max(raw_peaks.get(name, 0), raw_chars)
+        # Result sizes, never result contents — the OptMem evidence this
+        # keeps is exactly these sizes, which is all an observer may hold.
         _T.event("tool_after", sid, tool=name, looks_failed=looks_bad,
-                 result=result, result_chars=chars, result_raw_chars=raw_chars,
+                 result_chars=chars, result_raw_chars=raw_chars,
                  tool_call_id=kw.get("tool_call_id"))
     except Exception:
         pass
@@ -553,7 +715,7 @@ def _on_post_api_request(**kw: Any) -> None:
     try:
         sid = _sid(kw)
         usage = kw.get("usage") or {}
-        model = str(kw.get("model") or "")
+        model = _ident(kw.get("model")) or ""
         seconds = float(kw.get("api_duration") or 0.0)
 
         whole_prompt = _usage_int(usage, "prompt_tokens")
@@ -592,12 +754,16 @@ def _on_post_api_request(**kw: Any) -> None:
 def _on_api_error(**kw: Any) -> None:
     try:
         sid = _sid(kw)
-        detail = str(kw.get("error") or kw.get("message") or "")[:200]
+        error = kw.get("error")
+        if error is None:
+            error = kw.get("message")
+        kind, size = _error_shape(error)
         with _T._lock:
             session = _T._session(sid)
             if len(session["errors"]) < 50:
-                session["errors"].append(detail)
-        _T.event("api_error", sid, error=detail, model=kw.get("model"))
+                session["errors"].append(f"{kind}({size})")
+        _T.event("api_error", sid, error_kind=kind, error_chars=size,
+                 model=kw.get("model"))
     except Exception:
         pass
 
@@ -606,7 +772,7 @@ def _on_skill_lifecycle(**kw: Any) -> None:
     """The event that closes the original gap: a named skill, actually used."""
     try:
         sid = _sid(kw)
-        name = str(kw.get("skill_name") or kw.get("skill") or "")
+        name = _ident(kw.get("skill_name") or kw.get("skill")) or ""
         if name:
             with _T._lock:
                 session = _T._session(sid)
@@ -623,7 +789,8 @@ def _on_subagent_start(**kw: Any) -> None:
         sid = _sid(kw)
         with _T._lock:
             _T._session(sid)["subagents"] += 1
-        _T.event("subagent_start", sid, agent=kw.get("agent_name") or kw.get("agent"))
+        _T.event("subagent_start", sid,
+                 agent=kw.get("agent_name") or kw.get("agent"))
     except Exception:
         pass
 

@@ -1,8 +1,11 @@
 name: hermes-trace
 label: Hermes Trace
 kind: standalone
-version: 1.0.0
+version: 1.1.0
 description: >
   Records per-session evidence of agent activity: append-only events and compact
-  TraceCards under the configured trace directory.
+  TraceCards under the configured trace directory. Content-free capture only —
+  tool names, statuses, sizes and counters; arguments, results and error text
+  are omitted, never clipped. Skills-exposure counts come from the rendered
+  skills index (definition v2, versioned on the card), or read unknown.
 author: ghosty-11

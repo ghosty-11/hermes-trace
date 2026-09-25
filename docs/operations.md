@@ -23,10 +23,11 @@ disk. The cap is per-day, not total.
 - Raising `keep_event_days` extends history; lowering it reduces storage but loses older
 context.
 - Raising `max_cards` keeps more sessions; lowering it drops older cards during pruning.
-- Raising `max_field_chars` captures larger arguments and results; lowering it trims the
-event payload at the cost of detail.
+- Raising `max_field_chars` captures longer framework-vocabulary strings (platforms, model
+  and provider identifiers); lowering it trims those. Argument and result values are
+  never captured. Argument names are omitted; argument counts remain available, argument sizes are unknown, and only string results have measurable sizes.
 - Raising `max_tools_tracked` preserves rare tools; once the cap is reached, newly seen
-tools are not counted unless already tracked.
+  tools are not counted unless already tracked.
 
 ## Reading a card
 
@@ -62,7 +63,12 @@ largest prompt window became. These are observed totals, not provider billing re
 ### Which skills were exposed and never activated?
 
 Read `skills_exposed_unused`. Compare it with `skills_activated` and
-`skills_exposed_count`.
+`skills_exposed_count`. Check `skills_exposed_version` first: `2` means the count is the
+names this session's own surface rendered into its system-prompt skills index, so a
+surface whose skills tools are gated off reports a genuine zero. A count of `null` means
+the rendered index could not be read for that session — unknown, not zero; treat it as
+"no measurement", never as "no skills". Cards from before 2026-09-25 carry no version
+field and counted installed-minus-disabled, which over-reported on restricted surfaces.
 
 ### Is tool output expensive on this seat?
 

@@ -16,33 +16,23 @@ python3 -m json.tool schemas/trace-event.schema.json >/dev/null
 python3 -m json.tool schemas/trace-card.schema.json >/dev/null
 ```
 
-Copy the plugin files into the Hermes standalone-plugin directory:
-
-```sh
-install -d -m 0700 "$HERMES_HOME/plugins/hermes-trace"
-install -m 0600 plugin/__init__.py "$HERMES_HOME/plugins/hermes-trace/__init__.py"
-install -m 0600 plugin/plugin.yaml "$HERMES_HOME/plugins/hermes-trace/plugin.yaml"
-```
+Deploy through this module's `deploy/deploy` manifest owner, not a manual
+`install` into HERMES_HOME. First review a `plan` for the exact target and
+source revision. A production `apply` and gateway restart require separate
+operator approval; an isolated source test is not proof of the loaded plugin.
 
 ## Enable per profile
 
-Enable the plugin for each profile that should be traced. `plugins.enabled` is a list, so
-a scalar config setter cannot write it; use the interactive plugin toggle or edit the
-profile config directly:
-
-```yaml
-plugins:
-  enabled:
-    - hermes-trace
-```
-
-Enabling the plugin at one profile does not cover others. Repeat the step for every
-`<profile>` that needs tracing.
+Enable the plugin only for the profiles that should be traced. `plugins.enabled`
+is a list, so use the Hermes CLI's `config edit` with a reviewed, scripted
+editor for a list change; do not hand-edit a profile's live `config.yaml`.
+Retain all existing enabled names and verify each profile's resolved plugin
+list afterward. Enablement on root does not enable a multiplexed profile.
 
 ## Restart and config propagation
 
-Plugin code requires a gateway restart to load. Config values under the `trace:` block
-reach new sessions without a restart.
+Plugin code requires a separately approved gateway restart to load. A changed
+source file or config read alone does not prove the active plugin or its schema.
 
 ## Verification
 
@@ -53,7 +43,9 @@ and the event stream carries the same `profile` value.
 
 ## Upgrade and removal
 
-Disable `hermes-trace` on every profile, stop the gateway, back up the trace directory,
-install the new pinned plugin files, and restart. Re-enable only after the deterministic
-suite and one live profile smoke pass. For removal, disable the plugin on every profile
-first; retain trace files until the deployment's retention policy authorizes deletion.
+For an upgrade, preserve the prior source revision and deployed receipt,
+review the module's deployment plan, then request a controlled apply and
+gateway restart. Keep profile enablement and current trace data unless the
+operator separately authorizes a change. For removal, disable the plugin
+through the Hermes CLI on each owning profile first; retain trace files until
+the deployment's retention policy authorizes deletion.

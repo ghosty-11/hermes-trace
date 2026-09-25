@@ -12,7 +12,7 @@ Reference implementation of the hermes-trace observer. The deterministic suite c
 
 The plugin writes two artefacts under the configured trace directory (`trace/` under `$HERMES_HOME` by default, overridable under the `trace:` config block):
 
-- `events/YYYY-MM-DD.jsonl` — append-only, one JSON object per observed event. Each object carries `ts`, `kind`, `session_id`, `profile`, and event-specific bounded fields.
+- `events/YYYY-MM-DD.jsonl` — append-only, one JSON object per observed event. Each object carries `ts`, `kind`, `session_id`, `profile`, and event-specific fields. Tool argument names and values are never recorded; argument counts remain available, but payload sizes are `null`. Result content is never recorded; only string results have measurable sizes.
 - `cards/<session_id>.yaml` — a compact TraceCard per session, summarising cumulative state at the last turn boundary or finalisation.
 
 TraceCard fields, in order:
@@ -30,11 +30,16 @@ TraceCard fields, in order:
 11. `models`
 12. `subagents`
 13. `skills_activated`
-14. `skills_exposed_count`
-15. `skills_exposed_unused`
-16. `tool_calls`
-17. `tool_errors`
-18. `errors`
+14. `skills_exposed_version`
+15. `skills_exposed_count` (`null` when this surface's rendered index could not be read)
+16. `skills_exposed_unused`
+17. `tool_calls`
+18. `tool_errors`
+19. `tool_result_chars`
+20. `tool_result_max_chars`
+21. `tool_output_capped`
+22. `tool_raw_max_chars`
+23. `errors` (API error class/type names only)
 
 ## Boundary
 
@@ -45,6 +50,7 @@ Honest limits:
 - `session_seconds` is measured from the first event this process observed for the session id, so it is a floor, not the session's true age. A restart or a plugin loaded mid-session cannot recover unobserved work.
 - `on_session_end` is a turn boundary, not a terminal event. On a persistent chat surface it may fire many times for one session id; the plugin accumulates across it and only releases state on `on_session_finalize` or `on_session_reset`.
 - `tool_errors` is a heuristic on result text, not a status code. It may misclassify ambiguous outcomes.
+- Skill exposure is measured, not inferred: `skills_exposed_version: 2` counts the names this session's own surface rendered into its system-prompt skills index. A surface whose skills tools are gated off reports zero, and an index that could not be read reports `null` (unknown), never zero.
 - Profile attribution comes from the Hermes home path via the framework's `get_active_profile_name()`, never from a `HERMES_PROFILE` environment variable.
 
 Disk footprint is bounded by the `trace:` config keys: `max_event_file_mb`, `keep_event_days`, `max_cards`, `max_field_chars`, and `max_tools_tracked`.
@@ -71,7 +77,7 @@ Disk footprint is bounded by the `trace:` config keys: `max_event_file_mb`, `kee
 python3 -m unittest discover -s tests -v
 ```
 
-The deterministic suite currently contains 18 tests. It asserts profile attribution from the Hermes home path, accumulation of totals across `on_session_end` turn boundaries, finalisation semantics, totality of every handler on hostile input, bounded capture of long values, and configurability of the trace directory and event stream.
+The deterministic suite currently contains 31 tests. It asserts profile attribution from the Hermes home path, accumulation of totals across `on_session_end` turn boundaries, finalisation semantics, totality of every handler on hostile input, bounded and content-free capture of tool arguments and results (no value ever enters an event or card), the three-state skill-exposure contract (measured count, verified zero, unknown), agreement of emitted events with the published schema, and configurability of the trace directory and event stream.
 
 ## Support and security
 

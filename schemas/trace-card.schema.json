@@ -19,6 +19,7 @@
     "models",
     "subagents",
     "skills_activated",
+    "skills_exposed_version",
     "skills_exposed_count",
     "skills_exposed_unused",
     "tool_calls",
@@ -99,15 +100,24 @@
         "minimum": 1
       }
     },
-    "skills_exposed_count": {
+    "skills_exposed_version": {
       "type": "integer",
-      "minimum": 0
+      "const": 2,
+      "description": "Definition of the exposure count. 2: names this session's surface actually rendered into its system-prompt skills index. Pre-2 cards (field absent) counted installed-minus-disabled, profile-wide."
+    },
+    "skills_exposed_count": {
+      "anyOf": [
+        { "type": "integer", "minimum": 0 },
+        { "type": "null" }
+      ],
+      "description": "Distinct skills the session's surface rendered. Zero means verified empty; null means the rendered index was never successfully read (unknown)."
     },
     "skills_exposed_unused": {
-      "type": "array",
-      "items": {
-        "type": "string"
-      }
+      "anyOf": [
+        { "type": "array", "items": { "type": "string" } },
+        { "type": "null" }
+      ],
+      "description": "Sorted exposed skills never activated; null when exposure is unknown."
     },
     "tool_calls": {
       "type": "object",
@@ -153,10 +163,9 @@
     },
     "errors": {
       "type": "array",
-      "items": {
-        "type": "string"
-      },
-      "maxItems": 10
+      "items": { "type": "string" },
+      "maxItems": 10,
+      "description": "Up to 10 observed API error class/type names. Error message text is never recorded."
     }
   }
 }

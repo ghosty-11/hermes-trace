@@ -71,8 +71,16 @@ The published evidence argues for the same caution from the other side:
 ClawTrace measured curated skills raising mean pass rate 16.2 points while 16
 of 84 tasks REGRESSED, with their "keep what worked" patches driving the
 regressions and their prune patches acting as guardrails. Aggregate numbers
-conceal offsetting wins and losses in both directions. Decide per skill, with a
-reason, never on a count.
+conceal offsetting wins and losses in both directions. Decide per skill, with
+a reason, never on a count.
+
+"Exposed" is measured, not inferred: the names this session's own surface
+rendered into its system-prompt skills index, read through the same resolver
+chain a live turn uses. A surface whose skills tools are gated off reports a
+verified zero, and a session whose index could not be read reports `null`
+(unknown) rather than a count. Version 2 of the definition; cards without
+`skills_exposed_version` counted installed-minus-disabled profile-wide and
+over-reported on restricted surfaces.
 
 RULES IT FOLLOWS
 ----------------
@@ -81,6 +89,10 @@ RULES IT FOLLOWS
 * **Never block.** No network, no locks held across work, bounded writes.
 * **Bounded.** Event files are size-capped and old ones pruned, because an
   observability tool that fills the disk has caused an outage, not prevented one.
+* **Content-free where it counts.** Tool arguments, tool results and error
+  messages are recorded as names, sizes, types and booleans only. The values
+  themselves — credentials, file contents, prompts, provider error text —
+  never enter an event or a card, not clipped, not serialised, not hashed.
 * **Silent.** It emits nothing to any channel. Reading it is a separate job's
   business.
 """
@@ -109,8 +121,19 @@ DEFAULTS: dict[str, Any] = {
     "max_tools_tracked": 400,
 }
 
-_EXPOSED_TTL_S = 600
-_EXPOSED_CACHE: dict[str, Any] = {"at": 0.0, "names": [], "home": ""}
+
+# Version of the skills-exposure definition. 1 (implicit, pre-2026-09-25):
+# installed skills minus globally disabled ones, profile-wide — it ignored
+# per-surface gating and over-reported on restricted surfaces. 2: the names
+# this session's surface actually rendered into its system-prompt skills
+# index. Emitted on every session_start event and card so a reader can tell
+# which definition a number was computed under.
+SKILLS_EXPOSED_VERSION = 2
+
+# Tools whose presence on a surface causes a skills index to be rendered at
+# all (agent.system_prompt._skills_prompt uses exactly this triple). A surface
+# with none of them renders no index, so exposure there is a verified zero.
+_SKILLS_INDEX_TOOLS = ("skills_list", "skill_view", "skill_manage")
 
 
 # ---- environment resolution ------------------------------------------------
@@ -181,20 +204,33 @@ def _trace_dir(cfg: dict[str, Any] | None = None) -> Path:
 
 
 def _clip(value: Any, limit: int) -> Any:
-    """Bound a captured value. Strings truncate; everything else summarises."""
+    """Bound a captured value. Strings truncate; JSON-native values pass
+    bounded; anything else becomes None.
+
+    An unknown object is NEVER formatted: its ``__str__``/``__repr__`` is
+    arbitrary code whose output is exactly the content this plugin must not
+    record, so it is dropped, not stringified and clipped.
+    """
     try:
         if isinstance(value, str):
             return value if len(value) <= limit else value[:limit] + "…"
         if isinstance(value, (int, float, bool)) or value is None:
             return value
         if isinstance(value, dict):
-            return {str(k)[:64]: _clip(v, limit) for k, v in list(value.items())[:32]}
+            out: dict[str, Any] = {}
+            for key, item in list(value.items())[:32]:
+                # A non-string key is formatted only by its type NAME; the
+                # key object itself is never stringified.
+                out[key[:64] if isinstance(key, str) else
+                    type.__getattribute__(type(key), "__name__")] = \
+                    _clip(item, limit)
+            return out
         if isinstance(value, (list, tuple)):
-            return [_clip(v, limit) for v in list(value)[:32]]
-        text = str(value)
-        return text if len(text) <= limit else text[:limit] + "…"
+            return [_clip(item, limit) for item in list(value)[:32]]
+        return None
     except Exception:
-        return "<unrepresentable>"
+        return None
+
 
 
 class _Tracer:
@@ -219,7 +255,9 @@ class _Tracer:
             except OSError:
                 pass
             with path.open("a", encoding="utf-8") as handle:
-                handle.write(json.dumps(event, ensure_ascii=False, default=str) + "\n")
+                # No `default=`: a non-native value would mean a leak slipped
+                # past _clip; refusing to serialize drops the event instead.
+                handle.write(json.dumps(event, ensure_ascii=False) + "\n")
         except Exception:
             logger.debug("hermes-trace: event write failed", exc_info=True)
 
@@ -256,7 +294,8 @@ class _Tracer:
                 "platform": "",
                 "profile": _profile(),
                 "boundaries": 0,        # observed turn/session-end boundaries
-                "skills_exposed": [],   # available to choose from
+                "skills_exposed": [],   # measured names this surface rendered
+                "skills_measured": False,  # any successful index read happened
                 "skills_activated": {},  # name -> times activated
                 "tools": {},            # name -> count
                 "tool_errors": {},      # name -> count
@@ -310,12 +349,19 @@ class _Tracer:
                     return
                 if final:
                     self._sessions.pop(sid, None)
-                snapshot = json.loads(json.dumps(session, default=str))
+                # No `default=`: session state is native by construction, and
+                # a non-native value here should drop the card, not be
+                # stringified into it.
+                snapshot = json.loads(json.dumps(session))
 
             cfg = _config()
             elapsed = max(0.0, time.time() - float(snapshot["first_seen_at"]))
+            measured = bool(snapshot.get("skills_measured"))
             exposed = {name for name in snapshot["skills_exposed"] if name}
-            unused = sorted(exposed - set(snapshot["skills_activated"]))
+            # An unmeasured session reports unknown (null), never zero: zero
+            # means the surface's rendered index was read and listed nothing.
+            unused = (sorted(exposed - set(snapshot["skills_activated"]))
+                      if measured else None)
 
             lines = [
                 "# hermes-trace TraceCard — what this session actually did.",
@@ -338,7 +384,10 @@ class _Tracer:
                 f"models: {json.dumps(snapshot['models'])}",
                 f"subagents: {snapshot['subagents']}",
                 f"skills_activated: {json.dumps(snapshot['skills_activated'])}",
-                f"skills_exposed_count: {len(exposed)}",
+                f"skills_exposed_version: {SKILLS_EXPOSED_VERSION}"
+                "  # 2 = per-surface rendered index; pre-2 cards counted installed-minus-disabled",
+                f"skills_exposed_count: {json.dumps(len(exposed) if measured else None)}"
+                "  # null = this surface's rendered index was never successfully read",
                 f"skills_exposed_unused: {json.dumps(unused)}",
                 f"tool_calls: {json.dumps(snapshot['tools'])}",
                 f"tool_errors: {json.dumps(snapshot['tool_errors'])}",
@@ -350,7 +399,8 @@ class _Tracer:
                 "  # results the tool truncated before the model saw them",
                 f"tool_raw_max_chars: {json.dumps(snapshot['tool_raw_max_chars'])}"
                 "  # largest pre-cap output; the gap to result_max is what was dropped",
-                f"errors: {json.dumps(snapshot['errors'][:10])}",
+                f"errors: {json.dumps(snapshot['errors'][:10])}"
+                "  # error class/type names only; message text is never recorded",
             ]
 
             directory = _trace_dir(cfg) / "cards"
@@ -372,25 +422,86 @@ _T = _Tracer()
 # anything from an observer hook risks influencing control flow, which this
 # plugin must never do.
 
-def _exposed_skills() -> list[str]:
-    """Skills this profile could have chosen from, right now.
+def _names_from_rendered_index(text: str) -> list[str] | None:
+    """Skill names listed in a rendered system-prompt skills index.
 
-    Cached briefly and keyed by home, so a multiplexed process cannot serve one
-    profile's skill list to another.
+    [] for a genuinely empty index. None when the `<available_skills>` block
+    cannot be found: an unrecognised render is unknown, not empty.
     """
-    home = str(_home())
-    now = time.time()
-    if _EXPOSED_CACHE["home"] == home and now - float(_EXPOSED_CACHE["at"]) < _EXPOSED_TTL_S:
-        return list(_EXPOSED_CACHE["names"])
-    try:
-        from hermes_cli.skills_config import _list_all_skills, get_disabled_skills
-        from hermes_cli.config import load_config
-        installed = {s.get("name") for s in _list_all_skills() if s.get("name")}
-        names = sorted(installed - set(get_disabled_skills(load_config())))
-        _EXPOSED_CACHE.update({"at": now, "names": names, "home": home})
-        return list(names)
-    except Exception:
+    if not text:
         return []
+    opener, closer = "<available_skills>", "</available_skills>"
+    start, end = text.find(opener), text.find(closer)
+    if start < 0 or end < start:
+        return None
+    names: set[str] = set()
+    for line in text[start + len(opener):end].splitlines():
+        stripped = line.strip()
+        if stripped.startswith("- "):
+            name = stripped[2:].split(":", 1)[0].strip()
+            if name:
+                names.add(name)
+        elif "[names only]:" in stripped:
+            # A demoted category collapses to one names-only line.
+            tail = stripped.partition("[names only]:")[2]
+            names.update(n.strip() for n in tail.split(",") if n.strip())
+    return sorted(names)
+
+
+def _rendered_skill_names(platform: str) -> list[str] | None:
+    """Skill names `platform`'s own system-prompt index renders, or None.
+
+    Reads the same chain a live turn on this surface uses — the surface's
+    `platform_toolsets` resolution, the skills-tool gate that decides whether
+    an index is rendered at all, then the rendered index itself — so a skill
+    merely installed on the profile cannot inflate this count, and a surface
+    whose skills tools are gated off reports a VERIFIED EMPTY list, not
+    installed-minus-disabled.
+
+    None means the evidence is unavailable: a framework module missing on
+    this build, the profile config unreadable, or the render would run under
+    another surface's platform rules. Callers must report unknown for None,
+    never zero.
+    """
+    platform = str(platform or "").strip()
+    if not platform:
+        return None
+    try:
+        from hermes_cli.config import load_config
+        from hermes_cli.tools_config import _get_platform_tools
+        from toolsets import resolve_toolset
+
+        config = load_config()
+        enabled_toolsets = _get_platform_tools(config, platform)
+        tool_names: set[str] = set()
+        for toolset in enabled_toolsets:
+            tool_names.update(resolve_toolset(str(toolset)))
+        # The same gate agent.system_prompt applies: no skills tools on the
+        # surface means no index is rendered there at all.
+        if not tool_names & set(_SKILLS_INDEX_TOOLS):
+            return []
+
+        from agent.prompt_builder import (
+            _current_session_platform_hint, build_skills_system_prompt)
+        from agent.skill_utils import get_disabled_skill_names
+
+        hint = str(_current_session_platform_hint() or "")
+        if hint and hint != platform:
+            return None   # the render would apply another surface's rules
+        if not hint and (get_disabled_skill_names(platform)
+                         != get_disabled_skill_names(None)):
+            return None   # per-platform disabling could not be applied
+
+        rendered = build_skills_system_prompt(
+            available_tools=tool_names, available_toolsets=set(enabled_toolsets))
+        return _names_from_rendered_index(rendered)
+    except Exception:
+        return None
+
+
+def _exposed_skills(platform: str = "") -> list[str] | None:
+    """Measure this session's rendered skill index, never a cached prior seat."""
+    return _rendered_skill_names(str(platform or "").strip())
 
 
 def _sid(kw: dict) -> str:
@@ -400,18 +511,22 @@ def _sid(kw: dict) -> str:
 def _on_session_start(**kw: Any) -> None:
     try:
         sid = _sid(kw)
-        exposed = _exposed_skills()
+        platform = str(kw.get("platform") or "")
+        exposed = _exposed_skills(platform)
         with _T._lock:
             session = _T._session(sid)
-            session["platform"] = str(kw.get("platform") or "") or session["platform"]
-            if exposed:
+            session["platform"] = platform or session["platform"]
+            if exposed is not None:
                 # Union, never replace: a re-started id keeps what it could
-                # already have chosen from.
+                # already have chosen from. A read that could not be made
+                # adds nothing and does not un-measure an earlier one.
+                session["skills_measured"] = True
                 session["skills_exposed"] = sorted(
                     set(session["skills_exposed"]) | set(exposed))
         _T.event("session_start", sid, platform=kw.get("platform"),
                  boundary_reason=kw.get("boundary_reason"),
-                 skills_exposed_count=len(exposed))
+                 skills_exposed_count=(None if exposed is None else len(exposed)),
+                 skills_exposed_version=SKILLS_EXPOSED_VERSION)
     except Exception:
         pass
 
@@ -447,6 +562,17 @@ def _on_session_reset(**kw: Any) -> None:
         pass
 
 
+def _arg_summary(value: Any) -> dict[str, Any]:
+    """Report only top-level count; sizing requires rendering argument values."""
+    if isinstance(value, (dict, list, tuple)):
+        count = len(value)
+    elif value is None:
+        count = 0
+    else:
+        count = 1
+    return {"arg_count": count, "args_chars": None}
+
+
 def _on_pre_tool_call(**kw: Any) -> None:
     try:
         sid = _sid(kw)
@@ -456,7 +582,7 @@ def _on_pre_tool_call(**kw: Any) -> None:
             session = _T._session(sid)
             if len(session["tools"]) < cap or name in session["tools"]:
                 session["tools"][name] = session["tools"].get(name, 0) + 1
-        _T.event("tool_before", sid, tool=name, args=kw.get("args"),
+        _T.event("tool_before", sid, tool=name, **_arg_summary(kw.get("args")),
                  tool_call_id=kw.get("tool_call_id"), turn_id=kw.get("turn_id"))
     except Exception:
         pass
@@ -488,32 +614,31 @@ def _on_post_tool_call(**kw: Any) -> None:
         sid = _sid(kw)
         name = str(kw.get("tool_name") or "")
         result = kw.get("result")
-        # A tool "error" here is a heuristic on the result text, not a status
-        # code — Hermes returns tool failures as content. Recorded as a signal
-        # to look at, never as an assertion that something broke.
-        text = result if isinstance(result, str) else str(result)
-        looks_bad = text[:200].lower().lstrip().startswith(("error", "failed", "traceback"))
-        chars = len(text)
-        raw_chars = _raw_output_chars(text)
+        text = result if isinstance(result, str) else None
+        looks_bad = (text[:200].lower().lstrip().startswith(
+            ("error", "failed", "traceback")) if text is not None else False)
+        chars = len(text) if text is not None else None
+        raw_chars = _raw_output_chars(text) if text is not None else None
         cap = int(_config().get("max_tools_tracked", 400))
         with _T._lock:
             session = _T._session(sid)
             if looks_bad:
                 session["tool_errors"][name] = session["tool_errors"].get(name, 0) + 1
-            # Bounded exactly like `tools`: a session that touches hundreds of
-            # distinct tools must not grow the card without limit.
-            totals = session["tool_result_chars"]
-            if len(totals) < cap or name in totals:
-                totals[name] = totals.get(name, 0) + chars
-                peaks = session["tool_result_max_chars"]
-                peaks[name] = max(peaks.get(name, 0), chars)
-                if raw_chars is not None:
-                    capped = session["tool_output_capped"]
-                    capped[name] = capped.get(name, 0) + 1
-                    raw_peaks = session["tool_raw_max_chars"]
-                    raw_peaks[name] = max(raw_peaks.get(name, 0), raw_chars)
+            if chars is not None:
+                totals = session["tool_result_chars"]
+                if len(totals) < cap or name in totals:
+                    totals[name] = totals.get(name, 0) + chars
+                    peaks = session["tool_result_max_chars"]
+                    peaks[name] = max(peaks.get(name, 0), chars)
+                    if raw_chars is not None:
+                        capped = session["tool_output_capped"]
+                        capped[name] = capped.get(name, 0) + 1
+                        raw_peaks = session["tool_raw_max_chars"]
+                        raw_peaks[name] = max(raw_peaks.get(name, 0), raw_chars)
         _T.event("tool_after", sid, tool=name, looks_failed=looks_bad,
-                 result=result, result_chars=chars, result_raw_chars=raw_chars,
+                 result_type=type.__getattribute__(type(result), "__name__"),
+                 result_chars=chars,
+                 result_raw_chars=raw_chars,
                  tool_call_id=kw.get("tool_call_id"))
     except Exception:
         pass
@@ -592,12 +717,18 @@ def _on_post_api_request(**kw: Any) -> None:
 def _on_api_error(**kw: Any) -> None:
     try:
         sid = _sid(kw)
-        detail = str(kw.get("error") or kw.get("message") or "")[:200]
+        # The error's own text is provider/model output and can quote prompts
+        # or keys; only its explicit class/type is recorded. A string error
+        # has no more specific type than "str", which is still the truth.
+        error = kw.get("error")
+        if error is None:
+            error = kw.get("message")
+        error_type = type.__getattribute__(type(error), "__name__")
         with _T._lock:
             session = _T._session(sid)
             if len(session["errors"]) < 50:
-                session["errors"].append(detail)
-        _T.event("api_error", sid, error=detail, model=kw.get("model"))
+                session["errors"].append(error_type)
+        _T.event("api_error", sid, error_type=error_type, model=kw.get("model"))
     except Exception:
         pass
 

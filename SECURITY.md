@@ -1,6 +1,6 @@
 # Security policy
 
-This package is a local observability boundary. It records tool names, clipped tool arguments and results, model names, token counts, and skill names. Trace output is as sensitive as the conversations it observes and must not be published, shared, or archived without review.
+This package is a local observability boundary. It records tool names, argument counts, string-result sizes, API error class names, model names, token counts, and skill names measured from each surface's rendered index. It never records argument names, argument values, or result content. Trace output is as sensitive as the conversations it observes and must not be published, shared, or archived without review.
 
 Reports about unauthorised trace directory access, information leakage via trace files, retention bypass, configuration injection, or unsafe installation guidance are security-relevant.
 

@@ -15,14 +15,14 @@ missing field rather than a failed load.
 
 | Hook | Card fields populated by the hook | Fields left empty if absent |
 |---|---|---|
-| `on_session_start` | `platform`, `skills_exposed_count`, `skills_exposed_unused` | `platform` reports `unknown`; skill-exposure fields report zero or empty. |
+| `on_session_start` | `platform`, `skills_exposed_count`, `skills_exposed_unused`, `skills_exposed_version` | `platform` reports `unknown`; skill-exposure fields report `null` (unknown) — never zero — when this surface's rendered skills index cannot be read. |
 | `on_session_end` | `boundaries`, non-final card writes | `boundaries` stays zero; no card is written until a terminal hook. |
 | `on_session_finalize` | Final card write and accumulator release | No final card; memory is not released for this id. |
 | `on_session_reset` | Final card write and accumulator release | No final card; memory is not released for this id. |
 | `pre_tool_call` | `tool_calls` | `tool_calls` stays empty. |
 | `post_tool_call` | `tool_errors`, `tool_result_chars`, `tool_result_max_chars`, `tool_output_capped`, `tool_raw_max_chars` | All stay empty; output volume is unmeasurable. |
 | `post_api_request` | `api_calls`, `api_seconds`, `tokens`, `context_peak`, `models` | All report zero or empty. |
-| `api_request_error` | `errors` | `errors` stays empty. |
+| `api_request_error` | `errors` (error class/type names only; message text is never recorded) | `errors` stays empty. |
 | `on_skill_lifecycle` | `skills_activated` | `skills_activated` stays empty. |
 | `subagent_start` | `subagents` | `subagents` stays zero. |
 

@@ -33,7 +33,8 @@ Fired by `on_session_start`.
 |---|---|---|
 | `platform` | string or `null` | Chat surface or other platform identifier. |
 | `boundary_reason` | string or `null` | Reason the session started this turn, if supplied. |
-| `skills_exposed_count` | integer | Number of skills available to the profile at this moment. |
+| `skills_exposed_count` | integer or `null` | Names this surface's rendered skills index listed at this moment. Zero means the index was read and listed nothing; `null` means it could not be read (unknown, not zero). |
+| `skills_exposed_version` | integer | Version of the exposure definition; `2` = per-surface rendered index. Events without the field (pre-2026-09-25) counted installed-minus-disabled, profile-wide, and over-reported on restricted surfaces. |
 
 ### `session_end`
 
@@ -60,7 +61,8 @@ Fired by `pre_tool_call`.
 | Field | Type | Meaning |
 |---|---|---|
 | `tool` | string | Tool name. |
-| `args` | any | Tool arguments, before clipping. |
+| `arg_count` | integer | Number of top-level argument entries. Argument names and values are never recorded. |
+| `args_chars` | `null` | Unavailable because measuring the payload would render secret-bearing values. |
 | `tool_call_id` | string or `null` | Upstream tool-call identifier. |
 | `turn_id` | string or `null` | Upstream turn identifier. |
 
@@ -72,8 +74,8 @@ Fired by `post_tool_call`.
 |---|---|---|
 | `tool` | string | Tool name. |
 | `looks_failed` | boolean | Heuristic signal that the result text begins with an error/failure marker. |
-| `result` | any | Tool result, before clipping. |
-| `result_chars` | integer | Length of the result the model was handed, measured before clipping. |
+| `result_type` | string | Result value type name; result content is never recorded. |
+| `result_chars` | integer or `null` | Length of string results before clipping; `null` for non-string results. |
 | `result_raw_chars` | integer or `null` | Pre-cap output size the tool reported for itself (`output_total_chars`); `null` when the tool reported none. |
 | `tool_call_id` | string or `null` | Upstream tool-call identifier. |
 
@@ -99,7 +101,7 @@ Fired by `api_request_error`.
 
 | Field | Type | Meaning |
 |---|---|---|
-| `error` | string | Error detail, capped to 200 characters. |
+| `error_type` | string | Error class or value type name only (`RuntimeError`, `str`, ...). Error message text is never recorded. |
 | `model` | string or `null` | Model identifier, if supplied. |
 
 ### `skill`
@@ -140,15 +142,16 @@ are used in [`schemas/trace-card.schema.json`](../schemas/trace-card.schema.json
 | `models` | object | Map of model identifier to call count. |
 | `subagents` | integer | Number of subagent starts observed. |
 | `skills_activated` | object | Map of skill name to activation count. |
-| `skills_exposed_count` | integer | Number of distinct skills available to the profile during the session. |
-| `skills_exposed_unused` | array | Sorted list of exposed skills that were never activated. |
+| `skills_exposed_version` | integer | Version of the exposure definition; `2` = the names this session's surface actually rendered into its system-prompt skills index, read through the same resolver chain a live turn uses. Cards without the field (pre-2026-09-25) counted installed-minus-disabled, profile-wide. |
+| `skills_exposed_count` | integer or `null` | Distinct skills the session's surface rendered. `0` means the index was read and listed nothing — including a surface whose skills tools are gated off entirely. `null` means the index was never successfully read: unknown, not zero. |
+| `skills_exposed_unused` | array or `null` | Sorted exposed skills that were never activated; `null` when exposure is unknown. |
 | `tool_calls` | object | Map of tool name to call count. |
 | `tool_errors` | object | Map of tool name to heuristic failure count. |
 | `tool_result_chars` | object | Map of tool name to total chars of result the model read. |
 | `tool_result_max_chars` | object | Map of tool name to largest single result. |
 | `tool_output_capped` | object | Map of tool name to count of results the tool truncated before the model saw them. |
 | `tool_raw_max_chars` | object | Map of tool name to largest pre-cap output size the tool reported. |
-| `errors` | array | Up to 10 API error strings observed. |
+| `errors` | array | Up to 10 observed API error class/type names (`RuntimeError`, `str`, ...). Error message text is never recorded. |
 
 ## Session lifetime semantics
 
@@ -165,10 +168,14 @@ unobserved work.
 
 All bounds are configurable under the `trace:` block; defaults are listed in
 [`docs/operations.md`](operations.md).
-
-- **Field clipping.** String values are truncated to `max_field_chars` with an ellipsis
-  suffix. Dictionaries and lists are clipped to 32 entries; dictionary keys are clipped to
-  64 characters. Unrepresentable values become the string `<unrepresentable>`.
+- **Content-free capture.** Tool argument keys and values, tool result bodies and
+  error message text are not recorded, clipped, serialized or hashed. A
+  `tool_before` event keeps the top-level argument count; its size is null
+  because measuring arbitrary values would render them. `tool_after` keeps
+  the result type and the character count only for a string result; unknown
+  objects are never formatted. API errors keep class names, not messages.
+  Remaining named metadata strings are bounded by `max_field_chars`;
+  unknown objects project to null, not a stringified fallback.
 - **Per-day event-file size cap.** Each `events/YYYY-MM-DD.jsonl` file stops accepting
   events once it reaches `max_event_file_mb` megabytes. Events for that day are silently
   dropped rather than rotated or split.

@@ -51,8 +51,16 @@
           "anyOf": [{ "type": "string" }, { "type": "null" }]
         },
         "skills_exposed_count": {
+          "anyOf": [
+            { "type": "integer", "minimum": 0 },
+            { "type": "null" }
+          ],
+          "description": "Names this surface's rendered skills index listed at session start; null when the index could not be read (unknown, not zero)."
+        },
+        "skills_exposed_version": {
           "type": "integer",
-          "minimum": 0
+          "const": 2,
+          "description": "Definition of the exposure count. 2: per-surface rendered index. Pre-2 events counted installed-minus-disabled, profile-wide."
         }
       },
       "required": [
@@ -62,7 +70,8 @@
         "profile",
         "platform",
         "boundary_reason",
-        "skills_exposed_count"
+        "skills_exposed_count",
+        "skills_exposed_version"
       ],
       "additionalProperties": false
     },
@@ -110,7 +119,15 @@
         "session_id": { "type": "string" },
         "profile": { "type": "string" },
         "tool": { "type": "string" },
-        "args": {},
+        "arg_count": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Top-level argument entries. Values are never recorded."
+        },
+        "args_chars": {
+          "type": "null",
+          "description": "Unavailable because sizing requires rendering argument values."
+        },
         "tool_call_id": {
           "anyOf": [{ "type": "string" }, { "type": "null" }]
         },
@@ -124,7 +141,8 @@
         "session_id",
         "profile",
         "tool",
-        "args",
+        "arg_count",
+        "args_chars",
         "tool_call_id",
         "turn_id"
       ],
@@ -139,8 +157,14 @@
         "profile": { "type": "string" },
         "tool": { "type": "string" },
         "looks_failed": { "type": "boolean" },
-        "result": {},
-        "result_chars": { "type": "integer", "minimum": 0 },
+        "result_type": {
+          "type": "string",
+          "description": "Value type name only. Result content is never recorded."
+        },
+        "result_chars": {
+          "anyOf": [{ "type": "integer", "minimum": 0 }, { "type": "null" }],
+          "description": "Length of string results; null for non-string results."
+        },
         "result_raw_chars": {
           "anyOf": [{ "type": "integer", "minimum": 0 }, { "type": "null" }]
         },
@@ -155,7 +179,7 @@
         "profile",
         "tool",
         "looks_failed",
-        "result",
+        "result_type",
         "result_chars",
         "result_raw_chars",
         "tool_call_id"
@@ -205,12 +229,15 @@
         "kind": { "const": "api_error" },
         "session_id": { "type": "string" },
         "profile": { "type": "string" },
-        "error": { "type": "string" },
+        "error_type": {
+          "type": "string",
+          "description": "Error class or value type name only (RuntimeError, str, ...). Error message text is never recorded."
+        },
         "model": {
           "anyOf": [{ "type": "string" }, { "type": "null" }]
         }
       },
-      "required": ["ts", "kind", "session_id", "profile", "error", "model"],
+      "required": ["ts", "kind", "session_id", "profile", "error_type", "model"],
       "additionalProperties": false
     },
     "skill": {

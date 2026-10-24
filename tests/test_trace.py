@@ -100,6 +100,96 @@ class TraceTestCase(unittest.TestCase):
     def start(self, sid: str = "s1", platform: str = "chat") -> None:
         self.fire("on_session_start", session_id=sid, platform=platform)
 
+    def test_trace_events_never_store_tool_or_error_content(self):
+        secret = "SECRET-companion-audience-boundary"
+        self.start()
+        self.fire("pre_tool_call", session_id="s1", tool_name="read_file",
+                  args={"credential": secret})
+        self.fire("post_tool_call", session_id="s1", tool_name="read_file",
+                  result={"content": secret})
+        self.fire("api_request_error", session_id="s1", model="m",
+                  error=RuntimeError(secret))
+        self.fire("on_session_end", session_id="s1", completed=True)
+        events = self.events()
+        self.assertTrue({"tool_before", "tool_after", "api_error"}
+                        <= {event["kind"] for event in events})
+        self.assertNotIn(secret, json.dumps(events))
+        # The card projection carries the same boundary: error class names
+        # only, never the message text the exception carried.
+        card = self.card()
+        self.assertNotIn(secret, json.dumps(card))
+        self.assertEqual(json.loads(card["errors"]), ["RuntimeError"])
+
+    def test_error_type_does_not_consult_an_untrusted_metaclass(self):
+        secret = "SECRET-metaclass-error-payload"
+
+        class LeakyMeta(type):
+            def __getattribute__(cls, name):
+                if name == "__name__":
+                    return secret
+                return super().__getattribute__(name)
+
+        class MaskedError(RuntimeError, metaclass=LeakyMeta):
+            pass
+
+        self.start()
+        self.fire("api_request_error", session_id="s1", model="m",
+                  error=MaskedError(secret))
+        self.fire("on_session_end", session_id="s1", completed=True)
+        errors = [event for event in self.events() if event["kind"] == "api_error"]
+        self.assertEqual(len(errors), 1)
+        self.assertEqual(errors[0]["error_type"], "MaskedError")
+        self.assertEqual(json.loads(self.card()["errors"]), ["MaskedError"])
+        self.assertNotIn(secret, json.dumps(errors) + json.dumps(self.card()))
+
+    def test_unknown_objects_and_argument_names_are_never_formatted(self):
+        secret = "SECRET-untrusted-argument-name-and-value"
+        formatted: list[str] = []
+
+        class Untrusted:
+            def __str__(self):
+                formatted.append("str called")
+                return secret
+
+        self.start()
+        self.fire("pre_tool_call", session_id="s1", tool_name="read_file",
+                  args={secret: Untrusted()})
+        self.fire("post_tool_call", session_id="s1", tool_name="read_file",
+                  result=Untrusted())
+        self.fire("on_session_end", session_id="s1", completed=True)
+        events = self.events()
+        before = [event for event in events if event["kind"] == "tool_before"][0]
+        after = [event for event in events if event["kind"] == "tool_after"][0]
+        self.assertEqual(before["arg_count"], 1)
+        self.assertIsNone(before["args_chars"])
+        self.assertEqual(after["result_type"], "Untrusted")
+        self.assertIsNone(after["result_chars"])
+        self.assertIsNone(after["result_raw_chars"])
+        self.assertTrue({"tool_before", "tool_after"}
+                        <= {event["kind"] for event in events})
+        self.assertEqual(formatted, [])
+        self.assertNotIn(secret, json.dumps(events))
+        self.assertNotIn(secret, json.dumps(self.card()))
+
+
+    def test_tool_events_record_only_safe_shape_and_string_size(self):
+        self.start()
+        self.fire("pre_tool_call", session_id="s1", tool_name="read_file",
+                  args={"path": "/etc/passwd", "credential": "hunter2"})
+        self.fire("post_tool_call", session_id="s1", tool_name="read_file",
+                  result="file body")
+        before = [e for e in self.events() if e["kind"] == "tool_before"][0]
+        after = [e for e in self.events() if e["kind"] == "tool_after"][0]
+        self.assertEqual(before["arg_count"], 2)
+        self.assertIsNone(before["args_chars"])
+        self.assertEqual(after["result_type"], "str")
+        self.assertEqual(after["result_chars"], len("file body"))
+        self.assertNotIn("arg_names", before)
+        self.assertNotIn("arg_types", before)
+        self.assertNotIn("hunter2", json.dumps([before, after]))
+        self.assertNotIn("/etc/passwd", json.dumps([before, after]))
+
+
     # ---- profile attribution ---------------------------------------------
     def test_profile_comes_from_the_home_path(self):
         """A card must name the profile that produced it.
@@ -298,7 +388,7 @@ class TraceTestCase(unittest.TestCase):
             .read_text(encoding="utf-8"))
         defs = schema.get("$defs") or {}
 
-        self.plugin._exposed_skills = lambda: ["alpha"]
+        self.plugin._exposed_skills = lambda platform="": ["alpha"]
         self.start()
         self.fire("pre_tool_call", session_id="s1", tool_name="read_file", args={"p": 1})
         self.fire("post_tool_call", session_id="s1", tool_name="read_file", result="ok")
@@ -334,17 +424,67 @@ class TraceTestCase(unittest.TestCase):
 
     def test_exposed_skills_survive_a_boundary(self):
         """The headline field must not be emptied by a turn boundary."""
-        self.plugin._exposed_skills = lambda: ["alpha", "beta", "gamma"]
+        self.plugin._exposed_skills = lambda platform="": ["alpha", "beta", "gamma"]
         self.start()
         self.fire("on_skill_lifecycle", session_id="s1", skill_name="beta")
         self.fire("on_session_end", session_id="s1", completed=True)
         self.fire("on_session_end", session_id="s1", completed=True)
 
         card = self.card()
+        self.assertEqual(card["skills_exposed_version"], "2")
         self.assertEqual(card["skills_exposed_count"], "3")
         self.assertEqual(json.loads(card["skills_exposed_unused"]),
                          ["alpha", "gamma"])
         self.assertEqual(json.loads(card["skills_activated"]), {"beta": 1})
+
+    def test_verified_empty_surface_reports_zero_not_unknown(self):
+        """A surface that renders no skills index is a measured zero.
+
+        A restricted social profile may have its skills tools gated off on that
+        surface, so nothing was exposed there — installed-minus-disabled
+        would have counted dozens of skills the seat could never see.
+        """
+        self.plugin._exposed_skills = lambda platform="": []
+        self.start()
+        self.fire("on_session_end", session_id="s1", completed=True)
+
+        card = self.card()
+        self.assertEqual(card["skills_exposed_count"], "0")
+        self.assertEqual(json.loads(card["skills_exposed_unused"]), [])
+        start = [e for e in self.events() if e["kind"] == "session_start"][0]
+        self.assertEqual(start["skills_exposed_count"], 0)
+        self.assertEqual(start["skills_exposed_version"], 2)
+
+    def test_unreadable_index_reports_unknown_not_zero(self):
+        """No evidence is not zero: a count of 0 would be a fabricated fact.
+
+        The card must say the exposure was never measured, both so an
+        operator does not read 'no skills available' into a missing read and
+        so a scheduled reviewer can distinguish the two.
+        """
+        self.plugin._exposed_skills = lambda platform="": None
+        self.start()
+        self.fire("on_session_end", session_id="s1", completed=True)
+
+        card = self.card()
+        self.assertEqual(card["skills_exposed_count"], "null")
+        self.assertEqual(card["skills_exposed_unused"], "null")
+        start = [e for e in self.events() if e["kind"] == "session_start"][0]
+        self.assertIsNone(start["skills_exposed_count"])
+
+    def test_new_session_uses_current_rendered_skill_index(self):
+        """A profile change between starts must not reuse the previous count."""
+        names = ["alpha"]
+        self.plugin._rendered_skill_names = lambda _platform: list(names)
+        self.start("s1", platform="discord")
+        self.fire("on_session_end", session_id="s1", completed=True)
+        names[:] = ["beta", "gamma"]
+        self.start("s2", platform="discord")
+        self.fire("on_session_end", session_id="s2", completed=True)
+        self.assertEqual(json.loads(self.card("s1")["skills_exposed_unused"]),
+                         ["alpha"])
+        self.assertEqual(json.loads(self.card("s2")["skills_exposed_unused"]),
+                         ["beta", "gamma"])
 
     def test_open_session_has_a_card_marked_not_final(self):
         """A session that never ends must still be observable."""
@@ -408,13 +548,34 @@ class TraceTestCase(unittest.TestCase):
         self.fire("on_session_end", session_id="s1", completed=True)  # must not raise
 
     def test_captured_values_are_bounded(self):
+        """Nothing the emitter stores may grow with the input it saw.
+
+        Content-bearing fields are gone; the remaining free-form dimension
+        is names (tool, argument, skill), and those are clipped — so a
+        100k-character argument or result cannot make a 100k-character
+        event.
+        """
         self.start()
+        self.fire("pre_tool_call", session_id="s1", tool_name="read_file",
+                  args={"n" * 100_000: "v" * 100_000})
         self.fire("post_tool_call", session_id="s1", tool_name="read_file",
                   result="x" * 100_000)
-        payloads = [e for e in self.events() if e.get("kind") == "tool_after"]
-        self.assertTrue(payloads)
-        self.assertLessEqual(len(payloads[0]["result"]),
-                             self.plugin.DEFAULTS["max_field_chars"] + 1)
+
+        def strings(value):
+            if isinstance(value, str):
+                yield value
+            elif isinstance(value, dict):
+                for k, v in value.items():
+                    yield str(k)
+                    yield from strings(v)
+            elif isinstance(value, (list, tuple)):
+                for item in value:
+                    yield from strings(item)
+
+        bound = self.plugin.DEFAULTS["max_field_chars"] + 1
+        for event in self.events():
+            for text in strings(event):
+                self.assertLessEqual(len(text), bound)
 
     # ---- configuration ----------------------------------------------------
     def test_trace_directory_is_configurable(self):
